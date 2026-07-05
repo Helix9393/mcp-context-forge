@@ -223,6 +223,105 @@ async def get_backlog(db=Depends(get_db), _user=Depends(get_current_user_with_pe
     return service.get_backlog(db)
 
 
+@work_board_router.get("/pending")
+@require_permission("tools.read")
+async def get_pending(db=Depends(get_db), _user=Depends(get_current_user_with_permissions)) -> List[Dict[str, Any]]:
+    """Return every item with ``change_kind IS NOT NULL`` (the pending-changes view).
+
+    Distinct from ``/backlog``: this filters on the change-kind axis (doc/impl), not the
+    ``attention`` axis.
+
+    Args:
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        List[Dict[str, Any]]: Ordered pending-change items with derived status fields.
+    """
+    return service.get_pending(db)
+
+
+@work_board_router.post("/items/{item_id}/classify")
+@require_permission("admin.system_config")
+async def classify_item(item_id: str, db=Depends(get_db), _user=Depends(get_current_user_with_permissions)) -> Dict[str, Any]:
+    """Run the deterministic doc-vs-impl classification rule on an item (design doc §3).
+
+    On a ``doc`` match, this also performs the deterministic append and marks the item applied.
+    Any failed condition classifies the item as ``impl`` and leaves any target file untouched.
+
+    Args:
+        item_id: Item to classify.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        Dict[str, Any]: The updated item, reflecting ``change_kind``/``target_doc``/``run_state``.
+
+    Raises:
+        HTTPException: 404 if the item does not exist.
+    """
+    try:
+        item = service.classify_change(db, item_id)
+        return service._item_to_dict(item)  # pylint: disable=protected-access
+    except WorkBoardError as exc:
+        _raise_http(exc)
+
+
+@work_board_router.post("/items/{item_id}/launch")
+@require_permission("admin.system_config")
+async def launch_item(item_id: str, db=Depends(get_db), _user=Depends(get_current_user_with_permissions)) -> Dict[str, Any]:
+    """Spawn a detached ``claude --bg`` subagent for an ``impl`` item (design doc §4).
+
+    All four safety guards (change_kind/notes non-empty, git repo configured,
+    not already running, ``claude`` CLI present) are enforced service-side;
+    any guard failure sets ``run_state='failed'`` with an explanatory system
+    note and returns 200 (not spawning is a normal, reported outcome -- only
+    the idempotency guard raises).
+
+    Args:
+        item_id: The ``impl`` item to launch.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        Dict[str, Any]: The updated item, plus ``agent_id`` on a successful spawn.
+
+    Raises:
+        HTTPException: 404 if the item does not exist, 409 if a launch is already running.
+    """
+    try:
+        return service.launch_impl(db, item_id)
+    except WorkBoardError as exc:
+        _raise_http(exc)
+
+
+@work_board_router.get("/items/{item_id}/run-status")
+@require_permission("tools.read")
+async def get_run_status(item_id: str, db=Depends(get_db), _user=Depends(get_current_user_with_permissions)) -> Dict[str, Any]:
+    """Reconcile ``run_state`` for a ``running`` item via ``claude agents --json`` (design doc §4).
+
+    Read-only from the gateway's perspective (shells a read-only ``claude`` subcommand).
+    If the agent id can't be resolved or ``claude`` is missing, ``run_state`` is left
+    unchanged and the reason is reported in the response, never fabricated.
+
+    Args:
+        item_id: The item to reconcile.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        Dict[str, Any]: ``{"reconciled": bool, "reason": <str, if not reconciled>,
+        "run_state": <str>, "item": {...}}``.
+
+    Raises:
+        HTTPException: 404 if the item does not exist.
+    """
+    try:
+        return service.run_status(db, item_id)
+    except WorkBoardError as exc:
+        _raise_http(exc)
+
+
 @work_board_router.get("/items/{item_id}")
 @require_permission("tools.read")
 async def get_item(item_id: str, db=Depends(get_db), _user=Depends(get_current_user_with_permissions)) -> Dict[str, Any]:

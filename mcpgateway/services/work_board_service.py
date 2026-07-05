@@ -350,6 +350,9 @@ def update_item(db: Session, item_id: str, patch: Dict[str, Any], author: str = 
         raise WorkBoardValidationError("lane is immutable; use set_now/promote_next/demote_now to move items between lanes.")
     if "attention" in patch:
         raise WorkBoardValidationError("attention cannot be set directly; it changes only via add_note()/acknowledge().")
+    pending_fields = {"change_kind", "target_doc", "run_state"} & set(patch)
+    if pending_fields:
+        raise WorkBoardValidationError(f"{sorted(pending_fields)} cannot be set directly; use set_change_state().")
 
     unknown = set(patch) - set(_PATCHABLE_FIELDS)
     if unknown:
@@ -651,6 +654,81 @@ def demote_now(db: Session, to: str, priority: Optional[int] = None, author: str
     return now_item
 
 
+_CHANGE_KINDS = ("doc", "impl")
+_RUN_STATES = ("queued", "running", "applied", "failed")
+
+# Sentinel distinguishing "field not present in this call" from "field explicitly
+# set to None" -- set_change_state only touches fields the caller actually passes.
+_UNSET = object()
+
+
+def set_change_state(
+    db: Session,
+    item_id: str,
+    *,
+    change_kind: Optional[Any] = _UNSET,
+    target_doc: Optional[Any] = _UNSET,
+    run_state: Optional[Any] = _UNSET,
+    author: str = "agent",
+) -> WorkBoardItem:
+    """Set the pending-change fields (``change_kind``, ``target_doc``, ``run_state``) on an item.
+
+    This is the **only** writer of these three columns -- ``update_item`` rejects
+    them outright (see its ``pending_fields`` guard). Mirrors the in-txn +
+    system-note discipline of :func:`set_now`/:func:`demote_now`: only the fields
+    the caller actually passes are touched (``_UNSET`` sentinel distinguishes "not
+    passed" from "explicitly cleared to None"), and any real change is recorded
+    as a system note in the same transaction, same as a status/verdict change in
+    :func:`update_item`.
+
+    This method itself makes no classification judgment -- callers (the future
+    ``classify_change``/launch services, design doc §3/§4) decide the values;
+    this is purely the guarded, audited setter.
+
+    Args:
+        db: SQLAlchemy session.
+        item_id: Item to update.
+        change_kind: New ``change_kind`` (``None``/``"doc"``/``"impl"``), or omit to leave unchanged.
+        target_doc: New ``target_doc`` path, or omit to leave unchanged.
+        run_state: New ``run_state`` (``None``/``"queued"``/``"running"``/``"applied"``/``"failed"``), or omit to leave unchanged.
+        author: ``"agent"`` (default) or ``"operator"`` -- attributed on the system note.
+
+    Returns:
+        WorkBoardItem: The updated, committed item.
+
+    Raises:
+        WorkBoardNotFoundError: If no item with ``item_id`` exists.
+        WorkBoardValidationError: If ``change_kind`` or ``run_state`` holds an illegal value.
+    """
+    item = get_item(db, item_id)
+
+    if change_kind is not _UNSET and change_kind is not None and change_kind not in _CHANGE_KINDS:
+        raise WorkBoardValidationError(f"Invalid change_kind '{change_kind}'. Must be one of {_CHANGE_KINDS} or None.")
+    if run_state is not _UNSET and run_state is not None and run_state not in _RUN_STATES:
+        raise WorkBoardValidationError(f"Invalid run_state '{run_state}'. Must be one of {_RUN_STATES} or None.")
+
+    changes = []
+    if change_kind is not _UNSET and change_kind != item.change_kind:
+        changes.append(f"change_kind: {item.change_kind} -> {change_kind}")
+        item.change_kind = change_kind
+    if target_doc is not _UNSET and target_doc != item.target_doc:
+        changes.append(f"target_doc: {item.target_doc} -> {target_doc}")
+        item.target_doc = target_doc
+    if run_state is not _UNSET and run_state != item.run_state:
+        changes.append(f"run_state: {item.run_state} -> {run_state}")
+        item.run_state = run_state
+
+    if changes:
+        _append_note(db, item, f"{'; '.join(changes)} {_today()}", author)
+        if author == "operator":
+            _set_attention_for_operator_event(item)
+
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 def next_move(db: Session) -> Dict[str, Any]:
     """Compute the recommended next move: NOW if set, else highest-priority ``next`` item,
     else highest-severity open finding, else idle.
@@ -745,6 +823,412 @@ def acknowledge(db: Session, item_id: str, author: str = "operator") -> WorkBoar
     db.commit()
     db.refresh(item)
     return item
+
+
+# ---------------------------------------------------------------------------
+# Pending changes -- classify (§3) + pending view (§2)
+# ---------------------------------------------------------------------------
+
+_DOC_NOTE_RE = re.compile(r"^DOC:\s*(\S+)", re.MULTILINE)
+_APPEND_BLOCK_RE = re.compile(r"```append\s*\n(.*?)```", re.DOTALL)
+_DOC_EXTENSIONS = (".md", ".txt", ".rst")
+
+
+def _find_doc_note(item: WorkBoardItem) -> Optional[WorkBoardNote]:
+    """Return the most recent operator note on ``item`` whose first line matches ``^DOC:\\s*<path>``.
+
+    Args:
+        item: The item whose notes to scan.
+
+    Returns:
+        Optional[WorkBoardNote]: The matching note (most recent wins), or ``None``.
+    """
+    candidates = [n for n in item.notes if n.author == "operator" and re.match(r"^DOC:\s*\S+", (n.text or "").strip())]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda n: (n.at, n.id))
+
+
+def _resolve_doc_path(path: str, repo: str) -> Optional[str]:
+    """Resolve ``path`` against ``repo`` and verify realpath containment.
+
+    Args:
+        path: Repo-relative (or absolute) path claimed by a ``DOC:`` note.
+        repo: ``settings.work_board_git_repo``.
+
+    Returns:
+        Optional[str]: The realpath of the resolved file if it lies strictly inside
+        ``repo`` (symlink-resolved), else ``None``.
+    """
+    if not repo or not os.path.isdir(repo):
+        return None
+    repo_real = os.path.realpath(repo)
+    candidate = path if os.path.isabs(path) else os.path.join(repo_real, path)
+    candidate_real = os.path.realpath(candidate)
+    repo_prefix = repo_real.rstrip(os.sep) + os.sep
+    if candidate_real == repo_real or not candidate_real.startswith(repo_prefix):
+        return None
+    return candidate_real
+
+
+def classify_change(db: Session, item_id: str) -> WorkBoardItem:
+    """Deterministically classify an item as a doc-update or an implementation task (design doc §3).
+
+    An item is ``change_kind='doc'`` **iff all** hold:
+
+    1. It carries an operator note whose first line matches ``^DOC:\\s*<path>``.
+    2. ``<path>`` resolves inside ``settings.work_board_git_repo`` (realpath containment,
+       symlink-escape rejected) and its extension is in ``{.md, .txt, .rst}``.
+    3. The note body contains a fenced ```` ```append ... ``` ```` block.
+
+    Any condition failing classifies the item as ``change_kind='impl'``, ``run_state=None``,
+    and the doc is left untouched -- this makes no judgment about the content, only the
+    mechanical shape of the note (code/schema/config changes never match rule 1 or the
+    extension allowlist, so they fall to ``impl`` by construction).
+
+    On a ``doc`` match, this also performs the deterministic append: the fenced block's
+    body is appended to the target file (append-only, never rewritten), the path is
+    **re-validated** at write time via :func:`_resolve_doc_path` (rejecting any symlink/``..``
+    escape even if the DB note was written before the repo changed), and on success
+    ``run_state='applied'``, ``target_doc=<path>`` are recorded via :func:`set_change_state`
+    with a system note ``applied doc-change -> <path> <date>``, plus ``attention='addressed'``.
+
+    Args:
+        db: SQLAlchemy session.
+        item_id: Item to classify.
+
+    Returns:
+        WorkBoardItem: The updated, committed item (change_kind/target_doc/run_state reflect
+        the classification outcome).
+
+    Raises:
+        WorkBoardNotFoundError: If no item with ``item_id`` exists.
+    """
+    # First-Party
+    from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
+
+    item = get_item(db, item_id)
+
+    doc_note = _find_doc_note(item)
+    if doc_note is None:
+        return set_change_state(db, item_id, change_kind="impl", run_state=None, author="agent")
+
+    match = _DOC_NOTE_RE.match(doc_note.text.strip())
+    path = match.group(1) if match else None
+    if not path or os.path.splitext(path)[1].lower() not in _DOC_EXTENSIONS:
+        return set_change_state(db, item_id, change_kind="impl", run_state=None, author="agent")
+
+    resolved = _resolve_doc_path(path, settings.work_board_git_repo)
+    if resolved is None:
+        return set_change_state(db, item_id, change_kind="impl", run_state=None, author="agent")
+
+    block_match = _APPEND_BLOCK_RE.search(doc_note.text)
+    if block_match is None:
+        return set_change_state(db, item_id, change_kind="impl", run_state=None, author="agent")
+
+    # Re-validate containment at actual write time (design doc §3): re-resolve
+    # immediately before the filesystem write, not just at classification time,
+    # so a TOCTOU symlink swap between classify and write is also rejected.
+    write_target = _resolve_doc_path(path, settings.work_board_git_repo)
+    if write_target is None:
+        return set_change_state(db, item_id, change_kind="impl", run_state=None, author="agent")
+
+    append_body = block_match.group(1)
+    with open(write_target, "a", encoding="utf-8") as fh:  # nosec B108 - realpath-contained within work_board_git_repo, verified above
+        fh.write(append_body)
+
+    set_change_state(db, item_id, change_kind="doc", target_doc=path, run_state="applied", author="agent")
+    item = add_note(db, item_id, f"applied doc-change -> {path} {_today()}", author="agent", resolution="addressed")
+    return get_item(db, item_id)
+
+
+def get_pending(db: Session) -> List[Dict[str, Any]]:
+    """Return every item with ``change_kind IS NOT NULL`` (the pending-changes view, design doc §2).
+
+    Ordering: ``run_state`` rank (``failed`` -> ``running`` -> ``queued`` -> ``applied``, ``NULL``
+    last), then severity rank (findings-style; non-findings items rank after all severities).
+
+    Args:
+        db: SQLAlchemy session.
+
+    Returns:
+        List[Dict[str, Any]]: Each item dict includes ``id, title, lane, change_kind,
+        target_doc, run_state, attention``, plus ``latest_agent_note`` and
+        ``latest_operator_note`` (each ``None`` if no such note exists).
+    """
+    items = db.query(WorkBoardItem).filter(WorkBoardItem.change_kind.isnot(None)).all()
+
+    run_state_rank = {"failed": 0, "running": 1, "queued": 2, "applied": 3}
+
+    def _sort_key(item: WorkBoardItem):
+        return (run_state_rank.get(item.run_state, 99), _SEVERITY_RANK.get(item.severity, 99), item.id)
+
+    items.sort(key=_sort_key)
+
+    result = []
+    for item in items:
+        agent_notes = [n for n in item.notes if n.author == "agent"]
+        operator_notes = [n for n in item.notes if n.author == "operator"]
+        latest_agent = max(agent_notes, key=lambda n: (n.at, n.id)) if agent_notes else None
+        latest_operator = max(operator_notes, key=lambda n: (n.at, n.id)) if operator_notes else None
+        result.append(
+            {
+                "id": item.id,
+                "title": item.title,
+                "lane": item.lane,
+                "change_kind": item.change_kind,
+                "target_doc": item.target_doc,
+                "run_state": item.run_state,
+                "attention": item.attention,
+                "latest_agent_note": ({"id": latest_agent.id, "at": latest_agent.at, "text": latest_agent.text} if latest_agent else None),
+                "latest_operator_note": ({"id": latest_operator.id, "at": latest_operator.at, "text": latest_operator.text} if latest_operator else None),
+            }
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Launch control (design doc §4) -- spawn/reconcile a detached `claude --bg`
+# subagent for an `impl` item. Same subprocess safety idioms as refresh_git/
+# _run_git above: fixed argv (never shell=True), `# nosec B603`, cwd only ever
+# `settings.work_board_git_repo` (operator-configured, never request-supplied).
+# ---------------------------------------------------------------------------
+
+_LAUNCH_PREAMBLE = (
+    "You are an autonomous work-board subagent. Complete the task described below, then call "
+    "the work_board_add_note tool with author='agent' to record your result on this item "
+    "(use resolution='addressed' if you completed the work, or resolution='followup_requested' "
+    "-- with a clarifying question -- if you are blocked and need operator input). Do not stop "
+    "without leaving that note.\n\n"
+    "--- Task ---\n"
+)
+
+
+def _resolve_work_board_server_url(db: Session) -> Optional[str]:
+    """Resolve the ``work-board`` virtual MCP server's streamable-HTTP URL.
+
+    Looks up the ``Server`` row named ``"work-board"`` (registered by
+    ``todo/work-board/register_mcp_tools.py``) to get its id, then builds the
+    URL from ``settings.host``/``settings.port`` (the gateway's own bind
+    address) -- never guessed or request-supplied.
+
+    Args:
+        db: SQLAlchemy session.
+
+    Returns:
+        Optional[str]: ``http://<host>:<port>/servers/<uuid>/mcp``, or ``None``
+        if no such server is registered yet (a blocker, not a guessable default).
+    """
+    # First-Party
+    from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
+    from mcpgateway.db import Server  # pylint: disable=import-outside-toplevel
+
+    server = db.query(Server).filter(Server.name == "work-board").first()
+    if server is None:
+        return None
+    return f"http://{settings.host}:{settings.port}/servers/{server.id}/mcp"
+
+
+def _build_seed_prompt(item: WorkBoardItem) -> str:
+    """Build the fixed-preamble seed prompt for an ``impl`` launch (design doc §4).
+
+    Reads the item's title and full note thread from the DB at spawn time --
+    never accepts a request-supplied prompt.
+
+    Args:
+        item: The item being launched (already loaded with its notes).
+
+    Returns:
+        str: The preamble plus title plus the chronological note thread.
+    """
+    lines = [f"Title: {item.title}", ""]
+    for note in sorted(item.notes, key=lambda n: (n.at, n.id)):
+        lines.append(f"[{note.author} {note.at}] {note.text}")
+    return _LAUNCH_PREAMBLE + "\n".join(lines)
+
+
+def launch_impl(db: Session, item_id: str) -> Dict[str, Any]:
+    """Spawn a detached ``claude --bg`` subagent for an ``impl`` item (design doc §4).
+
+    Safety guards (all must pass, else ``run_state='failed'`` + an explanatory
+    system note, and no subprocess is spawned):
+
+    1. ``change_kind == 'impl'`` and the item carries at least one note (its
+       notes/target are non-empty).
+    2. ``settings.work_board_git_repo`` is set and ``os.path.isdir()`` on it.
+    3. ``run_state != 'running'`` (idempotency -- a ``WorkBoardConflictError``
+       is raised instead of re-spawning a second subagent over a live one).
+    4. ``shutil.which('claude')`` resolves.
+
+    On a successful spawn: parses the ``--output-format json`` stdout for the
+    background agent id, sets ``run_state='running'`` via :func:`set_change_state`,
+    and appends the system note ``launched impl subagent <agent-id> <date>``.
+
+    Args:
+        db: SQLAlchemy session.
+        item_id: The ``impl`` item to launch.
+
+    Returns:
+        Dict[str, Any]: The updated item dict plus ``{"agent_id": <str>}`` on
+        success.
+
+    Raises:
+        WorkBoardNotFoundError: If no item with ``item_id`` exists.
+        WorkBoardConflictError: If ``run_state`` is already ``'running'`` (guard 3).
+    """
+    # First-Party
+    from mcpgateway.config import settings  # pylint: disable=import-outside-toplevel
+
+    item = get_item(db, item_id)
+
+    # Guard 3 first: idempotency is a conflict (409), not a silent failed-state rewrite.
+    if item.run_state == "running":
+        raise WorkBoardConflictError(f"Item '{item_id}' already has a running launch (run_state='running').")
+
+    # Guard 1: change_kind + non-empty notes/target.
+    if item.change_kind != "impl" or not item.notes:
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: item is not a non-empty 'impl' item (change_kind={item.change_kind!r}) {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    # Guard 2: git repo configured and present.
+    repo_path = settings.work_board_git_repo
+    if not repo_path or not os.path.isdir(repo_path):
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: work_board_git_repo is not configured/does not exist {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    # Guard 4: the `claude` CLI must be resolvable on PATH.
+    claude_path = shutil.which("claude")
+    if claude_path is None:
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: 'claude' CLI not found on PATH {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    server_url = _resolve_work_board_server_url(db)
+    if server_url is None:
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: no 'work-board' MCP server registered (run register_mcp_tools.py first) {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    seed_prompt = _build_seed_prompt(item)
+    mcp_config = json.dumps({"mcpServers": {"work-board": {"type": "http", "url": server_url}}})
+
+    argv = [
+        claude_path,
+        "--bg",
+        "-p",
+        seed_prompt,
+        "--mcp-config",
+        mcp_config,
+        "--allowedTools",
+        "mcp__work-board__* Edit Bash(git *)",
+        "--permission-mode",
+        "acceptEdits",
+        "--output-format",
+        "json",
+    ]
+
+    try:
+        result = subprocess.run(argv, cwd=repo_path, capture_output=True, text=True, timeout=30, check=True)  # nosec B603 - fixed argv, operator-configured cwd only
+    except (subprocess.SubprocessError, OSError) as exc:
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: subprocess error: {exc} {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    try:
+        spawn_payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        spawn_payload = {}
+
+    agent_id = spawn_payload.get("agent_id") or spawn_payload.get("id") or spawn_payload.get("agentId")
+    if not agent_id:
+        set_change_state(db, item_id, run_state="failed", author="agent")
+        item = add_note(db, item_id, f"launch failed: could not parse agent id from 'claude --bg' output {_today()}", author="agent")
+        return _item_to_dict(item)
+
+    set_change_state(db, item_id, run_state="running", author="agent")
+    item = add_note(db, item_id, f"launched impl subagent {agent_id} {_today()}", author="agent")
+    payload = _item_to_dict(item)
+    payload["agent_id"] = agent_id
+    return payload
+
+
+def run_status(db: Session, item_id: str) -> Dict[str, Any]:
+    """Reconcile ``run_state`` for a ``running`` item via ``claude agents --json`` (design doc §4).
+
+    Read-only: shells a fixed-argv, ``shutil.which``-guarded ``claude agents --json``
+    call, finds this item's agent id (parsed from the ``launched impl subagent <id>``
+    system note), and flips ``running`` to ``applied``/``failed`` based on the agent's
+    terminal status. If the agent id can't be found in the note thread, the agent id
+    isn't present in ``claude agents --json`` output, or the ``claude`` CLI is missing,
+    ``run_state`` is left unchanged and the reason is reported -- never fabricated.
+
+    Args:
+        db: SQLAlchemy session.
+        item_id: The item to reconcile.
+
+    Returns:
+        Dict[str, Any]: ``{"reconciled": bool, "reason": <str, if not reconciled>,
+        "run_state": <str|None>}`` plus the item dict under ``"item"``.
+
+    Raises:
+        WorkBoardNotFoundError: If no item with ``item_id`` exists.
+    """
+    item = get_item(db, item_id)
+
+    if item.run_state != "running":
+        return {"reconciled": False, "reason": f"run_state is {item.run_state!r}, not 'running'; nothing to reconcile.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    launch_notes = [n for n in item.notes if n.author == "agent" and n.text and n.text.startswith("launched impl subagent ")]
+    if not launch_notes:
+        return {"reconciled": False, "reason": "no 'launched impl subagent <id>' note found on this item.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    latest_launch_note = max(launch_notes, key=lambda n: (n.at, n.id))
+    parts = latest_launch_note.text.split()
+    # ["launched", "impl", "subagent", "<agent-id>", "<date>"]
+    agent_id = parts[3] if len(parts) > 3 else None
+    if not agent_id:
+        return {"reconciled": False, "reason": "could not parse agent id from launch note.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    claude_path = shutil.which("claude")
+    if claude_path is None:
+        return {"reconciled": False, "reason": "'claude' CLI not found on PATH.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    try:
+        result = subprocess.run([claude_path, "agents", "--json"], capture_output=True, text=True, timeout=15, check=True)  # nosec B603 - fixed argv, no request-supplied input
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"reconciled": False, "reason": f"'claude agents --json' failed: {exc}", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    try:
+        agents = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return {"reconciled": False, "reason": "could not parse 'claude agents --json' output.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    if isinstance(agents, dict):
+        agents = agents.get("agents", agents.get("data", []))
+
+    match = None
+    for agent in agents if isinstance(agents, list) else []:
+        if isinstance(agent, dict) and agent.get("id") == agent_id:
+            match = agent
+            break
+
+    if match is None:
+        return {"reconciled": False, "reason": f"agent id '{agent_id}' not found in 'claude agents --json' output.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    agent_status = str(match.get("status", "")).lower()
+    if agent_status in ("completed", "success", "succeeded", "done"):
+        new_run_state = "applied"
+    elif agent_status in ("failed", "error", "errored"):
+        new_run_state = "failed"
+    else:
+        # Still running / unknown non-terminal status: leave unchanged, report why.
+        return {"reconciled": False, "reason": f"agent '{agent_id}' status is {agent_status!r}, not yet terminal.", "run_state": item.run_state, "item": _item_to_dict(item)}
+
+    item = set_change_state(db, item_id, run_state=new_run_state, author="agent")
+    item = add_note(db, item_id, f"reconciled run_state -> {new_run_state} (agent {agent_id}) {_today()}", author="agent")
+    return {"reconciled": True, "run_state": new_run_state, "item": _item_to_dict(item)}
 
 
 # ---------------------------------------------------------------------------

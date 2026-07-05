@@ -87,6 +87,19 @@ class WorkBoardItem(Base):
     # Backlog attention state machine (see work_board_service._ATTENTION_TRANSITIONS).
     attention: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'acknowledged'"))
 
+    # Pending-changes discriminator: null (ordinary item) | 'doc' | 'impl'. Set only by
+    # work_board_service.classify_change(); orthogonal to `attention` (see module docstring
+    # and pending-changes-launch-design.md §1) so it gets its own column, not an overload.
+    change_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # Repo-relative path targeted when change_kind='doc'. Re-validated against
+    # settings.work_board_git_repo at write time in classify_change/apply_doc_change.
+    target_doc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
+    # Lifecycle of the doc-write or spawned subagent: null -> queued -> running ->
+    # applied|failed. Orthogonal to `attention`; set only by the dedicated setter.
+    run_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -106,6 +119,14 @@ class WorkBoardItem(Base):
         CheckConstraint(
             "attention IN ('needs_attention','addressed','followup_requested','acknowledged')",
             name="ck_work_board_attention",
+        ),
+        CheckConstraint(
+            "change_kind IS NULL OR change_kind IN ('doc','impl')",
+            name="ck_work_board_change_kind",
+        ),
+        CheckConstraint(
+            "run_state IS NULL OR run_state IN ('queued','running','applied','failed')",
+            name="ck_work_board_run_state",
         ),
         # Single-NOW invariant, DB-level backstop (the service also enforces this as a clean 409).
         Index(

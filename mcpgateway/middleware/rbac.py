@@ -381,12 +381,13 @@ async def get_current_user_with_permissions(request: Request, credentials: Optio
         )
 
     if not token:
-        # For browser requests (HTML Accept header or HTMX), redirect to login
-        if is_browser_request:
-            raise HTTPException(status_code=status.HTTP_302_FOUND, detail="Authentication required", headers={"Location": f"{settings.app_root_path}/admin/login"})
-
-        # AUTH_REQUIRED=false no longer implies admin access.
-        # Preserve explicit unsafe override for local-only compatibility.
+        # Explicit local-only override takes precedence over the browser login
+        # redirect below: when AUTH_REQUIRED=false AND ALLOW_UNAUTHENTICATED_ADMIN=true,
+        # grant browser requests the same platform-admin identity already granted to
+        # API clients. Without this ordering, is_browser_request 302s every admin page
+        # load and HTMX/XHR call to /admin/login before the override is ever consulted
+        # (loopback single-user boxes only; dangerous override, gated by two
+        # secure-by-default flags — see config.py:401-405).
         if not settings.auth_required and getattr(settings, "allow_unauthenticated_admin", False) is True:
             _set_trace_context_for_identity(email=settings.platform_admin_email, is_admin=True, auth_method="disabled")
             return {
@@ -399,7 +400,13 @@ async def get_current_user_with_permissions(request: Request, credentials: Optio
                 "auth_method": "disabled",
                 "request_id": getattr(request.state, "request_id", None),
                 "team_id": getattr(request.state, "team_id", None),
+                "plugin_context_table": getattr(request.state, "plugin_context_table", None),
+                "plugin_global_context": getattr(request.state, "plugin_global_context", None),
             }
+
+        # For browser requests (HTML Accept header or HTMX), redirect to login
+        if is_browser_request:
+            raise HTTPException(status_code=status.HTTP_302_FOUND, detail="Authentication required", headers={"Location": f"{settings.app_root_path}/admin/login"})
 
         if not settings.auth_required:
             _set_trace_context_for_identity(email="anonymous", is_admin=False, auth_method="anonymous", token_teams=[], team_scope_known=True)
