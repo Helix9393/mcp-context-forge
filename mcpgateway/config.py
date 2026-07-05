@@ -1252,6 +1252,8 @@ class Settings(BaseSettings):
         description=("Enable stdio transport for MCP chat client configuration. Disabled by default; set true only in trusted environments that intentionally need stdio process execution."),
     )
     toolops_enabled: bool = Field(default=False, description="Enable ToolOps feature")
+    work_board_enabled: bool = Field(default=False, description="Enable the personal work board feature")
+    work_board_git_repo: str = Field(default="", description="Absolute path to the git repo used by work-board branch/PR refresh (empty disables refresh)")
     plugins_can_override_rbac: bool = Field(
         default=False,
         description=("Allow HTTP_AUTH_CHECK_PERMISSION plugins to short-circuit built-in RBAC grants. Disabled by default so plugin grant decisions are audit-only unless explicitly enabled."),

@@ -6942,3 +6942,6 @@ class A2AAgentPluginBinding(Base):
             str: String representation of A2AAgentPluginBinding instance.
         """
         return f"<A2AAgentPluginBinding(id='{self.id}', team_id='{self.team_id}', agent_name='{self.agent_name}', plugin_id='{self.plugin_id}')>"
+
+
+from mcpgateway.db_work_board import WorkBoardItem, WorkBoardNote  # noqa: E402,F401 — register work-board models on Base metadata

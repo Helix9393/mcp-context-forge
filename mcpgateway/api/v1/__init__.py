@@ -151,6 +151,27 @@ def _assemble_routers(  # noqa: C901 — deliberate single-function assembly, co
         except ImportError:
             logger.debug("Toolops router not available")
 
+    if settings.work_board_enabled:
+        try:
+            # First-Party
+            from mcpgateway.routers.work_board_router import work_board_router  # pylint: disable=import-outside-toplevel
+
+            target_router.include_router(work_board_router)
+            logger.info("Work Board router included")
+        except ImportError:
+            logger.debug("Work Board router not available")
+
+        if settings.mcpgateway_admin_api_enabled:
+            try:
+                # First-Party
+                from mcpgateway.admin import enforce_admin_csrf  # pylint: disable=import-outside-toplevel
+                from mcpgateway.routers.work_board_router import work_board_admin_router  # pylint: disable=import-outside-toplevel
+
+                target_router.include_router(work_board_admin_router, dependencies=[Depends(enforce_admin_csrf)])
+                logger.info("Work Board admin router included - Admin API enabled")
+            except ImportError:
+                logger.debug("Work Board admin router not available")
+
     if settings.mcpgateway_tool_cancellation_enabled:
         try:
             # First-Party

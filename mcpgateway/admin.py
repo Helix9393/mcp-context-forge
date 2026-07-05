@@ -4113,6 +4113,7 @@ async def admin_ui(
             "catalog_enabled": settings.mcpgateway_catalog_enabled,
             "llmchat_enabled": getattr(settings, "llmchat_enabled", False),
             "toolops_enabled": getattr(settings, "toolops_enabled", False),
+            "work_board_enabled": getattr(settings, "work_board_enabled", False),
             "observability_enabled": getattr(settings, "observability_enabled", False),
             "performance_enabled": getattr(settings, "mcpgateway_performance_tracking", False),
             "current_user": get_user_email(user),

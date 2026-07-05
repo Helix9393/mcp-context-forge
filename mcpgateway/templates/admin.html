@@ -426,6 +426,15 @@
               <span x-show="!sidebarCollapsed">ToolOps</span>
             </a>
             {% endif %}
+            {% if work_board_enabled %}
+            <a href="#work-board" id="tab-work-board" data-testid="work-board-tab"
+               class="sidebar-link group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors"
+               :class="{ 'justify-center': sidebarCollapsed }"
+               data-action-click="showTab" data-arg0="work-board">
+              <span class="sidebar-icon text-lg" :class="{ 'mr-3': !sidebarCollapsed }">📋</span>
+              <span x-show="!sidebarCollapsed">Work Board</span>
+            </a>
+            {% endif %}
             {% endif %}
             {% if 'prompts' not in hidden_sections %}
             <a href="#prompts" id="tab-prompts"
@@ -4304,6 +4313,14 @@
         </div>
       </div>
 
+      {% endif %}
+      {% if work_board_enabled %}
+      <!-- Work Board Panel -->
+      <div id="work-board-panel" class="tab-panel hidden">
+        <div id="work-board-content" hx-get="{{ root_path }}/admin/board/partial" hx-trigger="load" hx-swap="innerHTML">
+          <p class="text-sm text-gray-400 p-4">Loading work board...</p>
+        </div>
+      </div>
       {% endif %}
       {% if 'resources' not in hidden_sections %}
       <!-- Resources Panel -->
