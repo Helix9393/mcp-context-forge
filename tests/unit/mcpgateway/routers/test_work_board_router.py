@@ -187,9 +187,20 @@ class TestWorkBoardRouter:
     async def test_add_note_operator_flips_attention(self, db_session, user_ctx):
         """An operator note flips the item to needs_attention, visible via GET."""
         created = await create_item(WorkBoardItemCreateIn(lane="next", title="X"), db=db_session, _user=user_ctx)
-        await add_note(created["id"], WorkBoardNoteIn(text="please check"), db=db_session, _user=user_ctx)
+        await add_note(created["id"], WorkBoardNoteIn(text="please check", author="operator"), db=db_session, _user=user_ctx)
         item = await get_item(created["id"], db=db_session, _user=user_ctx)
         assert item["attention"] == "needs_attention"
+
+    @pytest.mark.asyncio
+    async def test_add_note_defaults_to_agent_not_operator(self, db_session, user_ctx):
+        """Regression: a bare note (no author) on the programmatic channel is authored
+        'agent', not 'operator' -- this REST/MCP path is only ever called by agents, and
+        must not stamp agent commentary as the human operator (nor flip attention)."""
+        created = await create_item(WorkBoardItemCreateIn(lane="next", title="X"), db=db_session, _user=user_ctx)
+        note = await add_note(created["id"], WorkBoardNoteIn(text="just an observation"), db=db_session, _user=user_ctx)
+        assert note["author"] == "agent"
+        item = await get_item(created["id"], db=db_session, _user=user_ctx)
+        assert item["attention"] != "needs_attention"
 
     @pytest.mark.asyncio
     async def test_add_note_resolution_conflict_maps_409(self, db_session, user_ctx):
@@ -203,7 +214,7 @@ class TestWorkBoardRouter:
     async def test_add_note_followup_without_question_mark_maps_422(self, db_session, user_ctx):
         """followup_requested without a question mark maps to HTTP 422."""
         created = await create_item(WorkBoardItemCreateIn(lane="next", title="X"), db=db_session, _user=user_ctx)
-        await add_note(created["id"], WorkBoardNoteIn(text="please check"), db=db_session, _user=user_ctx)
+        await add_note(created["id"], WorkBoardNoteIn(text="please check", author="operator"), db=db_session, _user=user_ctx)
         with pytest.raises(HTTPException) as exc_info:
             await add_note(created["id"], WorkBoardNoteIn(text="no question", author="agent", resolution="followup_requested"), db=db_session, _user=user_ctx)
         assert exc_info.value.status_code == 422

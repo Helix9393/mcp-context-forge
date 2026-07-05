@@ -67,7 +67,7 @@ class WorkBoardNoteIn(BaseModel):
     """Request body for adding a note to a work-board item."""
 
     text: str = Field(..., min_length=1, description="Note body")
-    author: Literal["operator", "agent"] = Field(default="operator", description="Note author")
+    author: Literal["operator", "agent"] = Field(default="agent", description="Note author. Defaults to 'agent': this REST/MCP channel is only ever called by agents; the human 'operator' path is the admin UI (/admin/board/note), which sets author explicitly. An agent relaying operator intent must pass author='operator' deliberately.")
     resolution: Optional[Literal["addressed", "followup_requested"]] = Field(default=None, description="Agent-only attention resolution")
 
 
@@ -600,12 +600,14 @@ def _render_board_partial(request: Request, db, error: Optional[str] = None) -> 
     from mcpgateway.utils.paths import resolve_root_path  # pylint: disable=import-outside-toplevel
 
     board = service.get_board(db)
+    pending = service.get_pending(db)
     return request.app.state.templates.TemplateResponse(
         request,
         "work_board_partial.html",
         {
             "request": request,
             "board": board,
+            "pending": pending,
             "root_path": resolve_root_path(request),
             "error": error,
         },
@@ -866,6 +868,94 @@ async def admin_acknowledge(
         HTMLResponse: The re-rendered board partial, or an inline error banner.
     """
     return _board_partial_after(request, db, lambda: service.acknowledge(db, item_id, author="operator"))
+
+
+@work_board_admin_router.post("/classify", response_class=HTMLResponse)
+@require_permission("admin.system_config", allow_admin_bypass=False)
+async def admin_classify_change(
+    request: Request,
+    item_id: str = Form(...),
+    db=Depends(get_db),
+    _user=Depends(get_current_user_with_permissions),
+) -> HTMLResponse:
+    """Run the deterministic doc-vs-impl classification rule on a pending-change item (design doc §3, §5.3).
+
+    Mirrors the other admin form endpoints: the mutation itself (``classify_change``) records
+    its own system notes with ``author="agent"`` (the classification rule and any doc-append
+    are mechanical, not an operator action), but this is still an operator-triggered click from
+    the admin UI -- hard-coded ``author="operator"`` is not applicable here since the service
+    method takes no author argument; the operator's role is invoking the button, which the
+    ``_board_partial_after`` re-render reflects immediately.
+
+    Args:
+        request: Incoming request.
+        item_id: Target pending-change item id.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        HTMLResponse: The re-rendered board partial, or an inline error banner (e.g. 404).
+    """
+    return _board_partial_after(request, db, lambda: service.classify_change(db, item_id))
+
+
+@work_board_admin_router.post("/launch", response_class=HTMLResponse)
+@require_permission("admin.system_config", allow_admin_bypass=False)
+async def admin_launch_impl(
+    request: Request,
+    item_id: str = Form(...),
+    db=Depends(get_db),
+    _user=Depends(get_current_user_with_permissions),
+) -> HTMLResponse:
+    """Spawn a detached ``claude --bg`` subagent for an ``impl`` pending-change item (design doc §4, §5.3).
+
+    The Launch button on a pending-change row. All four safety guards (change_kind/notes
+    non-empty, git repo configured, not already running, ``claude`` CLI present) are enforced
+    service-side; a guard failure sets ``run_state='failed'`` with an explanatory system note
+    and re-renders normally (badge flips to ``impl · failed``). Only the idempotency guard
+    (already ``running``) raises a :class:`WorkBoardConflictError`, surfaced as an inline
+    error banner here rather than a raw 409.
+
+    Args:
+        request: Incoming request.
+        item_id: The ``impl`` item to launch.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        HTMLResponse: The re-rendered board partial (badge flips to ``impl · running`` on
+        spawn), or an inline error banner on a caught conflict.
+    """
+    return _board_partial_after(request, db, lambda: service.launch_impl(db, item_id))
+
+
+@work_board_admin_router.post("/launch-status", response_class=HTMLResponse)
+@require_permission("admin.system_config", allow_admin_bypass=False)
+async def admin_launch_status(
+    request: Request,
+    item_id: str = Form(...),
+    db=Depends(get_db),
+    _user=Depends(get_current_user_with_permissions),
+) -> HTMLResponse:
+    """Reconcile ``run_state`` for a ``running`` pending-change item via ``claude agents --json`` (design doc §4, §5.3).
+
+    The "Refresh status" button on a pending-change row with ``run_state='running'``. Read-only
+    from the gateway's perspective; if the agent id can't be resolved or ``claude`` is missing,
+    ``run_state`` is left unchanged and the re-rendered partial simply shows the same badge
+    (no fabricated transition) -- this call never raises on an unreconciled outcome, it only
+    reports via the item's own state, so ``_board_partial_after``'s error path only fires on a
+    genuine :class:`WorkBoardError` (e.g. 404 on a deleted item).
+
+    Args:
+        request: Incoming request.
+        item_id: The ``running`` item to reconcile.
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        HTMLResponse: The re-rendered board partial, or an inline error banner.
+    """
+    return _board_partial_after(request, db, lambda: service.run_status(db, item_id))
 
 
 @work_board_admin_router.post("/refresh", response_class=HTMLResponse)

@@ -38,7 +38,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add change_kind, target_doc, run_state columns + CHECK constraints to work_board_items."""
+    """Add change_kind, target_doc, run_state columns to work_board_items (ALTER-add only)."""
     conn = op.get_bind()
     inspector = sa.inspect(conn)
     existing_columns = {col["name"] for col in inspector.get_columns("work_board_items")}
@@ -50,20 +50,13 @@ def upgrade() -> None:
     if "run_state" not in existing_columns:
         op.add_column("work_board_items", sa.Column("run_state", sa.String(16), nullable=True))
 
-    existing_constraints = {ck["name"] for ck in inspector.get_check_constraints("work_board_items")}
-
-    if "ck_work_board_change_kind" not in existing_constraints:
-        op.create_check_constraint(
-            "ck_work_board_change_kind",
-            "work_board_items",
-            "change_kind IS NULL OR change_kind IN ('doc','impl')",
-        )
-    if "ck_work_board_run_state" not in existing_constraints:
-        op.create_check_constraint(
-            "ck_work_board_run_state",
-            "work_board_items",
-            "run_state IS NULL OR run_state IN ('queued','running','applied','failed')",
-        )
+    # CHECK constraints for change_kind/run_state are intentionally NOT created here.
+    # SQLite does not support ALTER-add of CHECK constraints (op.create_check_constraint
+    # raises NotImplementedError, requiring batch/table-recreate, which would risk the
+    # notes FK). Enum integrity is enforced at the service layer -- set_change_state is the
+    # single writer and validates both enums. Keeping this ALTER-add only lets the gateway's
+    # auto-migration (bootstrap_db) run it natively on SQLite at startup.
+    # See db_work_board.py __table_args__ note.
 
 
 def downgrade() -> None:

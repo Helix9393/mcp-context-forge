@@ -120,14 +120,11 @@ class WorkBoardItem(Base):
             "attention IN ('needs_attention','addressed','followup_requested','acknowledged')",
             name="ck_work_board_attention",
         ),
-        CheckConstraint(
-            "change_kind IS NULL OR change_kind IN ('doc','impl')",
-            name="ck_work_board_change_kind",
-        ),
-        CheckConstraint(
-            "run_state IS NULL OR run_state IN ('queued','running','applied','failed')",
-            name="ck_work_board_run_state",
-        ),
+        # NOTE: change_kind/run_state enum integrity is enforced at the service
+        # layer (set_change_state is the single writer and validates both against
+        # fixed enums). DB-level CHECK constraints were intentionally omitted: SQLite
+        # cannot ALTER-add CHECK constraints (only batch/table-recreate), which would
+        # risk the notes FK during migration. Service-layer validation is the contract.
         # Single-NOW invariant, DB-level backstop (the service also enforces this as a clean 409).
         Index(
             "uq_work_board_single_now",

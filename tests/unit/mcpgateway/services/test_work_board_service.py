@@ -539,3 +539,188 @@ class TestGetBacklog:
         backlog = wbs.get_backlog(db_session)
         assert len(backlog) == 1
         assert len(backlog[0]["notes"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# launch_impl / run_status (design doc §4) -- subprocess/shutil.which ALWAYS
+# mocked here. No real `claude` process may be spawned by this test module.
+# ---------------------------------------------------------------------------
+
+
+def _make_impl_item(db_session, tmp_path, title="Do the thing"):
+    """Create a change_kind='impl' item with a non-empty note, pointed at a real tmp dir repo."""
+    # First-Party
+    from mcpgateway.db import Server
+
+    item = wbs.create_item(db_session, "next", {"title": title})
+    wbs.add_note(db_session, item.id, "please implement this", author="operator")
+    wbs.set_change_state(db_session, item.id, change_kind="impl", author="agent")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    server = Server(id="server-uuid-1234", name="work-board", description="test")
+    db_session.add(server)
+    db_session.commit()
+
+    return wbs.get_item(db_session, item.id), str(repo)
+
+
+class TestLaunchImpl:
+    """launch_impl: 4 safety guards + happy-path spawn parsing. subprocess/shutil.which mocked throughout."""
+
+    def test_guard1_not_impl_or_empty_notes_fails_no_spawn(self, db_session, monkeypatch):
+        """A non-'impl' item (or one with no notes) fails guard 1: run_state='failed', no subprocess call."""
+        item = wbs.create_item(db_session, "next", {"title": "No notes, not impl"})
+
+        called = {"subprocess": False}
+        monkeypatch.setattr(wbs.subprocess, "run", lambda *a, **k: called.__setitem__("subprocess", True))
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: "/usr/bin/claude")
+
+        wbs.launch_impl(db_session, item.id)
+        refreshed = wbs.get_item(db_session, item.id)
+        assert refreshed.run_state == "failed"
+        assert called["subprocess"] is False
+
+    def test_guard2_git_repo_missing_fails_no_spawn(self, db_session, monkeypatch):
+        """settings.work_board_git_repo unset/not-a-dir fails guard 2: run_state='failed', no subprocess call."""
+        item = wbs.create_item(db_session, "next", {"title": "Impl item"})
+        wbs.add_note(db_session, item.id, "please implement", author="operator")
+        wbs.set_change_state(db_session, item.id, change_kind="impl", author="agent")
+
+        # First-Party
+        from mcpgateway.config import settings
+
+        monkeypatch.setattr(settings, "work_board_git_repo", "/no/such/path/at/all")
+
+        called = {"subprocess": False}
+        monkeypatch.setattr(wbs.subprocess, "run", lambda *a, **k: called.__setitem__("subprocess", True))
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: "/usr/bin/claude")
+
+        wbs.launch_impl(db_session, item.id)
+        refreshed = wbs.get_item(db_session, item.id)
+        assert refreshed.run_state == "failed"
+        assert called["subprocess"] is False
+
+    def test_guard3_already_running_raises_conflict_no_spawn(self, db_session, monkeypatch):
+        """run_state already 'running' raises a conflict (idempotency guard); no subprocess call."""
+        item = wbs.create_item(db_session, "next", {"title": "Impl item"})
+        wbs.add_note(db_session, item.id, "please implement", author="operator")
+        wbs.set_change_state(db_session, item.id, change_kind="impl", run_state="running", author="agent")
+
+        called = {"subprocess": False}
+        monkeypatch.setattr(wbs.subprocess, "run", lambda *a, **k: called.__setitem__("subprocess", True))
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: "/usr/bin/claude")
+
+        with pytest.raises(wbs.WorkBoardConflictError):
+            wbs.launch_impl(db_session, item.id)
+        assert called["subprocess"] is False
+
+    def test_guard4_claude_missing_fails_no_spawn(self, db_session, monkeypatch, tmp_path):
+        """shutil.which('claude') returning None fails guard 4: run_state='failed', no subprocess call."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        item = wbs.create_item(db_session, "next", {"title": "Impl item"})
+        wbs.add_note(db_session, item.id, "please implement", author="operator")
+        wbs.set_change_state(db_session, item.id, change_kind="impl", author="agent")
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(settings, "work_board_git_repo", str(repo))
+
+        called = {"subprocess": False}
+        monkeypatch.setattr(wbs.subprocess, "run", lambda *a, **k: called.__setitem__("subprocess", True))
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: None)
+
+        wbs.launch_impl(db_session, item.id)
+        refreshed = wbs.get_item(db_session, item.id)
+        assert refreshed.run_state == "failed"
+        assert called["subprocess"] is False
+
+    def test_happy_path_parses_bg_json_and_sets_running(self, db_session, monkeypatch, tmp_path):
+        """All 4 guards pass + work-board server registered: parses a fake --bg json, sets
+        run_state='running', appends agent-id note. No real subprocess is spawned (subprocess.run
+        is mocked)."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        item, repo_path = _make_impl_item(db_session, tmp_path)
+        monkeypatch.setattr(settings, "work_board_git_repo", repo_path)
+
+        captured_argv = {}
+
+        class _FakeCompletedProcess:
+            stdout = '{"agent_id": "bg-agent-42"}'
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(argv, **kwargs):
+            captured_argv["argv"] = argv
+            captured_argv["cwd"] = kwargs.get("cwd")
+            return _FakeCompletedProcess()
+
+        monkeypatch.setattr(wbs.subprocess, "run", _fake_run)
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None)
+
+        result = wbs.launch_impl(db_session, item.id)
+
+        assert result["agent_id"] == "bg-agent-42"
+        refreshed = wbs.get_item(db_session, item.id)
+        assert refreshed.run_state == "running"
+        assert any("launched impl subagent bg-agent-42" in (n.text or "") for n in refreshed.notes)
+
+        # Confirm the exact argv contract (design doc §4a) and that cwd is the configured repo only.
+        argv = captured_argv["argv"]
+        assert argv[0] == "/usr/bin/claude"
+        assert "--bg" in argv
+        assert "-p" in argv
+        assert "--mcp-config" in argv
+        assert "--allowedTools" in argv
+        assert "mcp__work-board__* Edit Bash(git *)" in argv
+        assert "--permission-mode" in argv
+        assert "acceptEdits" in argv
+        assert "--output-format" in argv
+        assert "json" in argv
+        assert captured_argv["cwd"] == repo_path
+
+
+class TestRunStatus:
+    """run_status: reconcile via mocked 'claude agents --json'; never fabricates a terminal state."""
+
+    def test_not_running_is_noop(self, db_session):
+        """An item that isn't currently 'running' reports reconciled=False without shelling out."""
+        item = wbs.create_item(db_session, "next", {"title": "Idle item"})
+        result = wbs.run_status(db_session, item.id)
+        assert result["reconciled"] is False
+
+    def test_claude_missing_leaves_state_unchanged(self, db_session, monkeypatch):
+        """shutil.which('claude') returning None leaves run_state unchanged and reports why."""
+        item = wbs.create_item(db_session, "next", {"title": "Impl item"})
+        wbs.set_change_state(db_session, item.id, change_kind="impl", run_state="running", author="agent")
+        wbs.add_note(db_session, item.id, "launched impl subagent bg-agent-42 2026-07-05", author="agent")
+
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: None)
+        result = wbs.run_status(db_session, item.id)
+        assert result["reconciled"] is False
+        assert result["run_state"] == "running"
+
+    def test_happy_path_flips_running_to_applied(self, db_session, monkeypatch):
+        """A matching agent id with a terminal 'completed' status flips running -> applied."""
+        item = wbs.create_item(db_session, "next", {"title": "Impl item"})
+        wbs.set_change_state(db_session, item.id, change_kind="impl", run_state="running", author="agent")
+        wbs.add_note(db_session, item.id, "launched impl subagent bg-agent-42 2026-07-05", author="agent")
+
+        class _FakeCompletedProcess:
+            stdout = '[{"id": "bg-agent-42", "status": "completed"}]'
+            stderr = ""
+            returncode = 0
+
+        monkeypatch.setattr(wbs.shutil, "which", lambda name: "/usr/bin/claude")
+        monkeypatch.setattr(wbs.subprocess, "run", lambda argv, **kwargs: _FakeCompletedProcess())
+
+        result = wbs.run_status(db_session, item.id)
+        assert result["reconciled"] is True
+        assert result["run_state"] == "applied"
+        refreshed = wbs.get_item(db_session, item.id)
+        assert refreshed.run_state == "applied"

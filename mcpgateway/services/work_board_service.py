@@ -1088,28 +1088,28 @@ def launch_impl(db: Session, item_id: str) -> Dict[str, Any]:
     # Guard 1: change_kind + non-empty notes/target.
     if item.change_kind != "impl" or not item.notes:
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: item is not a non-empty 'impl' item (change_kind={item.change_kind!r}) {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: item is not a non-empty 'impl' item (change_kind={item.change_kind!r}) {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     # Guard 2: git repo configured and present.
     repo_path = settings.work_board_git_repo
     if not repo_path or not os.path.isdir(repo_path):
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: work_board_git_repo is not configured/does not exist {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: work_board_git_repo is not configured/does not exist {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     # Guard 4: the `claude` CLI must be resolvable on PATH.
     claude_path = shutil.which("claude")
     if claude_path is None:
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: 'claude' CLI not found on PATH {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: 'claude' CLI not found on PATH {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     server_url = _resolve_work_board_server_url(db)
     if server_url is None:
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: no 'work-board' MCP server registered (run register_mcp_tools.py first) {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: no 'work-board' MCP server registered (run register_mcp_tools.py first) {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     seed_prompt = _build_seed_prompt(item)
     mcp_config = json.dumps({"mcpServers": {"work-board": {"type": "http", "url": server_url}}})
@@ -1133,8 +1133,8 @@ def launch_impl(db: Session, item_id: str) -> Dict[str, Any]:
         result = subprocess.run(argv, cwd=repo_path, capture_output=True, text=True, timeout=30, check=True)  # nosec B603 - fixed argv, operator-configured cwd only
     except (subprocess.SubprocessError, OSError) as exc:
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: subprocess error: {exc} {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: subprocess error: {exc} {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     try:
         spawn_payload = json.loads(result.stdout or "{}")
@@ -1144,12 +1144,12 @@ def launch_impl(db: Session, item_id: str) -> Dict[str, Any]:
     agent_id = spawn_payload.get("agent_id") or spawn_payload.get("id") or spawn_payload.get("agentId")
     if not agent_id:
         set_change_state(db, item_id, run_state="failed", author="agent")
-        item = add_note(db, item_id, f"launch failed: could not parse agent id from 'claude --bg' output {_today()}", author="agent")
-        return _item_to_dict(item)
+        add_note(db, item_id, f"launch failed: could not parse agent id from 'claude --bg' output {_today()}", author="agent")
+        return _item_to_dict(get_item(db, item_id))
 
     set_change_state(db, item_id, run_state="running", author="agent")
-    item = add_note(db, item_id, f"launched impl subagent {agent_id} {_today()}", author="agent")
-    payload = _item_to_dict(item)
+    add_note(db, item_id, f"launched impl subagent {agent_id} {_today()}", author="agent")
+    payload = _item_to_dict(get_item(db, item_id))
     payload["agent_id"] = agent_id
     return payload
 
@@ -1226,9 +1226,9 @@ def run_status(db: Session, item_id: str) -> Dict[str, Any]:
         # Still running / unknown non-terminal status: leave unchanged, report why.
         return {"reconciled": False, "reason": f"agent '{agent_id}' status is {agent_status!r}, not yet terminal.", "run_state": item.run_state, "item": _item_to_dict(item)}
 
-    item = set_change_state(db, item_id, run_state=new_run_state, author="agent")
-    item = add_note(db, item_id, f"reconciled run_state -> {new_run_state} (agent {agent_id}) {_today()}", author="agent")
-    return {"reconciled": True, "run_state": new_run_state, "item": _item_to_dict(item)}
+    set_change_state(db, item_id, run_state=new_run_state, author="agent")
+    add_note(db, item_id, f"reconciled run_state -> {new_run_state} (agent {agent_id}) {_today()}", author="agent")
+    return {"reconciled": True, "run_state": new_run_state, "item": _item_to_dict(get_item(db, item_id))}
 
 
 # ---------------------------------------------------------------------------

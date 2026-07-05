@@ -17,6 +17,90 @@
   </div>
   {% endif %}
 
+  <!-- ================= PENDING CHANGES ================= -->
+  <!-- Pinned above the next-move banner (design doc §2/§5.3): renders get_pending(db),
+       wired into this context by _render_board_partial as `pending`. Status is derived,
+       not stored -- one badge string from the (attention, change_kind, run_state) triple. -->
+  <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Pending changes</h3>
+      <span class="text-xs text-gray-400 dark:text-gray-500">{{ pending | length }} item{{ 's' if pending | length != 1 else '' }}</span>
+    </div>
+
+    {% macro pending_status_badge(item) %}
+      {% set kind = item.change_kind or 'unclassified' %}
+      {% set run = item.run_state or 'unset' %}
+      {% set label = kind ~ ' · ' ~ run ~ ' · ' ~ item.attention %}
+      {% if item.run_state == 'failed' %}
+        {% set cls = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200' %}
+      {% elif item.run_state == 'running' %}
+        {% set cls = 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' %}
+      {% elif item.run_state == 'applied' %}
+        {% set cls = 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' %}
+      {% elif item.change_kind %}
+        {% set cls = 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200' %}
+      {% else %}
+        {% set cls = 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300' %}
+      {% endif %}
+      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ cls }}">{{ label }}</span>
+    {% endmacro %}
+
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
+        <thead class="bg-gray-50 dark:bg-gray-900">
+          <tr>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Title</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Lane</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Status</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
+          {% for item in pending %}
+          <tr id="work-board-pending-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }}">
+            <td class="px-3 py-2 dark:text-gray-200">{{ item.title }}</td>
+            <td class="px-3 py-2 dark:text-gray-300">{{ item.lane }}</td>
+            <td class="px-3 py-2">{{ pending_status_badge(item) }}</td>
+            <td class="px-3 py-2">
+              <div class="flex flex-wrap items-center gap-1">
+                {% if not item.change_kind or (item.run_state is none and item.change_kind != 'doc') %}
+                <button type="button"
+                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600 text-white hover:bg-gray-700"
+                        hx-post="{{ root_path }}/admin/board/classify"
+                        hx-vals='{"item_id": "{{ item.id }}"}'
+                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                  Classify
+                </button>
+                {% endif %}
+                {% if item.change_kind == 'impl' and item.run_state != 'running' %}
+                <button type="button"
+                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
+                        hx-post="{{ root_path }}/admin/board/launch"
+                        hx-vals='{"item_id": "{{ item.id }}"}'
+                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                  Launch
+                </button>
+                {% endif %}
+                {% if item.run_state == 'running' %}
+                <button type="button"
+                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-600 text-white hover:bg-amber-700"
+                        hx-post="{{ root_path }}/admin/board/launch-status"
+                        hx-vals='{"item_id": "{{ item.id }}"}'
+                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                  Refresh status
+                </button>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-center py-4 text-gray-400">No pending changes.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Next-move banner -->
   <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4 dark:bg-indigo-900/20 dark:border-indigo-800">
     <div class="flex items-center justify-between flex-wrap gap-2">
