@@ -49,7 +49,10 @@
         "vite:preview": "vite preview",
         "build:css": "NODE_ENV=production postcss mcpgateway/static/css/tailwind.src.css -o mcpgateway/static/css/tailwind.min.css",
         "watch:css": "postcss mcpgateway/static/css/tailwind.src.css -o mcpgateway/static/css/tailwind.min.css --watch",
-        "board": "bash scripts/board.sh"
+        "board": "bash scripts/board.sh",
+        "board:on": "bash scripts/gateway.sh on",
+        "board:off": "bash scripts/gateway.sh off",
+        "board:status": "bash scripts/gateway.sh status"
     },
     "dependencies": {
         "@alpinejs/csp": "^3.15.8",

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# board.sh — start the MCP gateway (if not already running) and open the Work
-# Board admin UI in the browser. Personal-workflow convenience that mirrors the
-# old `npm run dashboard` ergonomics: one command, server up, browser open.
+# board.sh — ensure the always-on MCP gateway service is running, then open
+# the Work Board admin UI in the browser. Personal-workflow convenience that
+# mirrors the old `npm run dashboard` ergonomics: one command, service up,
+# browser open. The gateway itself now lives in launchd (com.chadkuisel.mcp-gateway,
+# see scripts/gateway.sh) so it survives reboots and respawns on crash — this
+# script no longer runs uvicorn in the foreground.
 #
 # Usage:  ./scripts/board.sh
-#         (Ctrl-C stops the server when this command started it.)
 #
 set -euo pipefail
 
@@ -22,21 +24,27 @@ open_board() {
   open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
 }
 
-# Already running (e.g. started earlier or in another terminal)? Just open it.
+wait_for_health() {
+  local tries=0
+  until curl -sf "$HEALTH" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [[ $tries -ge 60 ]]; then
+      echo "⚠️  Gateway did not become healthy after 30s — check: bash scripts/gateway.sh status" >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+}
+
 if curl -sf "$HEALTH" >/dev/null 2>&1; then
   echo "✅ Gateway already running on ${HOST}:${PORT} — opening Work Board."
-  open_board
-  exit 0
+else
+  echo "🚀 Gateway not running — starting the always-on service…"
+  bash scripts/gateway.sh on
+  echo "⏳ Waiting for ${HEALTH}…"
+  wait_for_health
+  echo "✅ Gateway up."
 fi
 
-echo "🚀 Starting gateway on ${HOST}:${PORT} (Ctrl-C to stop)…"
-
-# Wait for the server to answer health, then open the browser — in the
-# background so it doesn't block the foreground server process below.
-( until curl -sf "$HEALTH" >/dev/null 2>&1; do sleep 0.5; done
-  echo "🌐 Opening Work Board…"
-  open_board ) &
-
-# Foreground, single worker (best for the single-user SQLite board). Loads
-# .env automatically via pydantic-settings since cwd is the repo root.
-exec .venv/bin/uvicorn mcpgateway.main:app --host "$HOST" --port "$PORT"
+echo "🌐 Opening Work Board…"
+open_board
