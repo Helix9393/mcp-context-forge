@@ -71,32 +71,11 @@
   document.body.addEventListener("htmx:afterSettle", resyncAttentionFilter);
   document.body.addEventListener("htmx:load", resyncAttentionFilter);
 
-  // ----- Tier 3: optimistic left-border reflect on verdict/severity change -----
-  // Recolor the row's left edge the instant the operator picks a value, before the
-  // hx-patch round-trip returns. The morph response then reconciles to the server value.
-  var SEVERITY_BORDER = { critical: "border-red-500", warning: "border-amber-400", advisory: "border-gray-300" };
-  var ALL_SEVERITY_BORDERS = ["border-red-500", "border-amber-400", "border-gray-300"];
-  function onSelectChange(ev) {
-    var sel = ev.target;
-    if (!sel || sel.tagName !== "SELECT") return;
-    var row = sel.closest(".work-board-item");
-    if (!row) return;
-    if (sel.name === "verdict") {
-      // Branches/PRs rows live in a divide-y tbody; the left border is driven by the
-      // data-verdict attribute + inline CSS (a bare Tailwind border class is overridden).
-      row.setAttribute("data-verdict", sel.value);
-    } else if (sel.name === "severity") {
-      // Findings are plain divs (no divide-y override) -> swap the Tailwind border class.
-      var cls = SEVERITY_BORDER[sel.value];
-      if (cls) {
-        ALL_SEVERITY_BORDERS.forEach(function (c) { row.classList.remove(c); });
-        row.classList.add(cls);
-      }
-    }
-  }
-  // Delegated on the stable, never-morphed wrapper -> no re-binding after swaps.
+  // The stable, never-morphed wrapper -- delegate all board click/edit handlers here
+  // so they survive every swap without re-binding. (Optimistic border reflect was
+  // removed with the <select>s in Batch A: chips fire an immediate hx-patch and the
+  // fast local morph reconciles the border in ~one frame, so no pre-echo is needed.)
   var stableWrap = document.getElementById("work-board-content");
-  if (stableWrap) stableWrap.addEventListener("change", onSelectChange);
 
   // ----- "Jump to it": scroll to the item WITHOUT changing the URL hash -----
   // The admin shell is hash-routed; a bare href="#work-board-<id>" changes

@@ -102,7 +102,7 @@
                 {% if not item.change_kind or (item.run_state is none and item.change_kind != 'doc') %}
                 <button type="button"
                         title="Figure out what kind of change this is"
-                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600 text-white hover:bg-gray-700"
+                        class="wb-spin-on inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600 text-white hover:bg-gray-700"
                         hx-post="{{ root_path }}/admin/board/classify"
                         hx-vals='{"item_id": "{{ item.id }}"}'
                         hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
@@ -113,7 +113,7 @@
                 {% if item.change_kind == 'impl' and item.run_state != 'running' %}
                 <button type="button"
                         title="Start an agent working on this"
-                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
+                        class="wb-spin-on inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
                         hx-post="{{ root_path }}/admin/board/launch"
                         hx-vals='{"item_id": "{{ item.id }}"}'
                         hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
@@ -203,6 +203,13 @@
     .work-board-item[data-attention="needs_attention"]      { border-left-color: #f97316 !important; }
     .work-board-item[data-attention="followup_requested"]   { border-left-color: #a855f7 !important; }
     .work-board-item[data-attention="addressed"]            { border-left-color: #3b82f6 !important; }
+    /* Attention POP: unacknowledged rows are the ones needing action, so make them
+       land first -- a thicker rail plus a faint matching wash. Washes key off
+       data-attention, so the default (acknowledged) rows stay clean and quiet. */
+    .work-board-item--attn { border-left-width: 5px !important; }
+    .work-board-item[data-attention="needs_attention"]    { background-color: rgba(249,115,22,.06) !important; }
+    .work-board-item[data-attention="followup_requested"] { background-color: rgba(168,85,247,.06) !important; }
+    .work-board-item[data-attention="addressed"]          { background-color: rgba(59,130,246,.05) !important; }
     /* Motion as cue: animate left-border/badge recolors (verdict flips, morph patches). */
     .work-board-item { transition: border-color .2s ease, background-color .2s ease; }
     .work-board-item .inline-flex { transition: color .2s ease, background-color .2s ease; }
@@ -227,21 +234,26 @@
     .dark .wb-chips__label { color: #9ca3af; }
     .wb-chip {
       display: inline-flex; align-items: center;
-      padding: .1875rem .5rem;
+      padding: .25rem .6rem;
       border-radius: 9999px;
       font-size: .75rem; line-height: 1rem; font-weight: 500;
       border: 1px solid transparent;
       cursor: pointer;
       white-space: nowrap;
-      transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .1s ease, box-shadow .15s ease;
+      transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .08s ease, box-shadow .15s ease;
     }
     .wb-chip:hover { transform: translateY(-1px); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
-    .wb-chip:active { transform: translateY(0); box-shadow: none; }
+    .wb-chip:active { transform: scale(.92); box-shadow: none; }   /* tactile press */
     .wb-chip:focus-visible { outline: 2px solid var(--c); outline-offset: 1px; }
     .wb-chip[disabled] { opacity: .55; cursor: default; transform: none; box-shadow: none; }
     .wb-chip--idle   { background: var(--ct); color: var(--cf); border-color: var(--cb); }
     .wb-chip--idle:hover { border-color: var(--c); }
-    .wb-chip--active { background: var(--c); color: #fff; border-color: var(--c); }
+    /* Active chip is unmistakable: solid fill + bold + lift + inner highlight ring. */
+    .wb-chip--active {
+      background: var(--c); color: #fff; border-color: var(--c); font-weight: 600;
+      box-shadow: 0 2px 6px -1px rgba(0,0,0,.30), inset 0 0 0 1px rgba(255,255,255,.18);
+    }
+    .wb-chip--active:hover { transform: translateY(-1px); }
     /* Color variants: --c solid fill, --ct idle tint bg, --cf idle text, --cb idle border. */
     .wb-chip--green  { --c: #22c55e; --ct: #f0fdf4; --cf: #15803d; --cb: #bbf7d0; }
     .wb-chip--amber  { --c: #f59e0b; --ct: #fffbeb; --cf: #b45309; --cb: #fde68a; }
@@ -305,12 +317,32 @@
     }
     .dark .wb-inline-editing { background: #111827; color: #f3f4f6; border-color: #818cf8; }
 
+    /* ---- Card separation: lift the board cards off the dark background ---- */
+    .dark #work-board-content-inner .rounded-lg.shadow { border: 1px solid rgba(148,163,184,.12); }
+
+    /* ---- Row hover: subtle tactility on interactive rows ---- */
+    #work-board-content-inner .work-board-item { border-radius: .375rem; }
+    #work-board-content-inner div.work-board-item:hover { background-color: rgba(148,163,184,.06); }
+
+    /* ---- In-flight spinner: append a spinner to a slow action while its request runs.
+       Uses currentColor so it reads on both filled (white) and light (dark) buttons,
+       and keeps the label visible (no layout jump). ---- */
+    @keyframes wbSpin { to { transform: rotate(360deg); } }
+    .wb-spin-on.htmx-request { cursor: wait; }
+    .wb-spin-on.htmx-request::after {
+      content: ""; display: inline-block;
+      width: .7rem; height: .7rem; margin-left: .4rem;
+      border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+      vertical-align: -.1em; animation: wbSpin .6s linear infinite;
+    }
+
     /* ---- Section header landmark icons (fast visual scanning) ---- */
     .wb-sec-ico { display: inline-block; margin-right: .4rem; font-size: 1rem; line-height: 1; vertical-align: -.05em; }
 
     /* Respect reduced-motion: kill the animated cues, keep the state colors. */
     @media (prefers-reduced-motion: reduce) {
-      .wb-flash, .wb-live-dot, .wb-toast { animation: none !important; transition: none !important; }
+      .wb-flash, .wb-live-dot, .wb-toast, .wb-spin-on.htmx-request::after { animation: none !important; transition: none !important; }
+      .wb-chip:hover, .wb-chip:active, .wb-chip--active:hover { transform: none !important; }
     }
   </style>
 
@@ -486,11 +518,11 @@
 
         <div class="mt-3 flex flex-col gap-2">
           {{ chip_group(item.id, 'patch', '/admin/board/set-priority', 'priority',
-              [{'label': '1', 'value': 1, 'color': 'gray'},
-               {'label': '2', 'value': 2, 'color': 'gray'},
-               {'label': '3', 'value': 3, 'color': 'gray'},
-               {'label': '4', 'value': 4, 'color': 'gray'},
-               {'label': '5', 'value': 5, 'color': 'gray'}],
+              [{'label': '1', 'value': 1, 'color': 'indigo'},
+               {'label': '2', 'value': 2, 'color': 'indigo'},
+               {'label': '3', 'value': 3, 'color': 'indigo'},
+               {'label': '4', 'value': 4, 'color': 'indigo'},
+               {'label': '5', 'value': 5, 'color': 'indigo'}],
               item.priority, 'Priority (1 = top)') }}
 
           {% if board.now %}
@@ -524,7 +556,7 @@
           {% else %}
           <div>
             <button type="button"
-                    class="wb-chip wb-chip--indigo wb-chip--active"
+                    class="wb-spin-on wb-chip wb-chip--indigo wb-chip--active"
                     hx-post="{{ root_path }}/admin/board/promote"
                     hx-vals='{"item_id": "{{ item.id }}"}'
                     hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
@@ -553,7 +585,7 @@
           {% if board.git_refreshed_label %}git refreshed {{ board.git_refreshed_label }}{% else %}never refreshed{% endif %}
         </span>
         <button type="button"
-                class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
+                class="wb-spin-on text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
                 hx-post="{{ root_path }}/admin/board/refresh"
                 hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                 hx-disabled-elt="this">
