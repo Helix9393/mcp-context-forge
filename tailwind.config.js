@@ -5,6 +5,17 @@ module.exports = {
         "./mcpgateway/static/**/*.js",
     ],
     darkMode: "class",
+    safelist: [
+        // Verdict / severity left-border colors (Jinja if/elif + JS optimistic reflect)
+        "border-green-500", "border-amber-400", "border-sky-400", "border-gray-300", "border-red-500",
+        // Ahead/behind divergence numerals
+        "text-green-600", "dark:text-green-400",
+        "text-amber-600", "dark:text-amber-400",
+        "text-red-600", "dark:text-red-400",
+        "text-gray-400", "dark:text-gray-500",
+        // Running-row pulse
+        "animate-pulse-soft",
+    ],
     theme: {
         extend: {
             animation: {

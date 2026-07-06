@@ -171,3 +171,33 @@ class WorkBoardNote(Base):
             str: String representation of the WorkBoardNote instance.
         """
         return f"<WorkBoardNote(id={self.id}, item_id='{self.item_id}', author='{self.author}')>"
+
+
+class WorkBoardMeta(Base):
+    """Freeform key/value store for board-level metadata that belongs to no single item.
+
+    Used for cross-item facts such as the last git-refresh timestamp (key
+    ``last_git_refresh``), surfaced as the Branches-header freshness chip. Values are
+    opaque strings written/read only by the service layer; there is no enum to enforce,
+    so no CHECK constraint is needed (and none could be ALTER-added on SQLite anyway).
+    """
+
+    __tablename__ = "work_board_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("CURRENT_TIMESTAMP"),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        """String representation.
+
+        Returns:
+            str: String representation of the WorkBoardMeta instance.
+        """
+        return f"<WorkBoardMeta(key='{self.key}')>"

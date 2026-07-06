@@ -32,7 +32,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 # First-Party
-from mcpgateway.db_work_board import WorkBoardItem, WorkBoardNote
+from mcpgateway.db_work_board import WorkBoardItem, WorkBoardMeta, WorkBoardNote
 
 # ---------------------------------------------------------------------------
 # Enum vocabulary (frozen -- §2.3 of the spec). Declared once here and reused
@@ -84,6 +84,75 @@ def _today() -> str:
         str: Today's date in ISO 8601 date format (UTC).
     """
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def _now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string (for work_board_meta values).
+
+    Returns:
+        str: Current UTC time, ISO-8601 with offset.
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _get_meta(db: Session, key: str) -> Optional[str]:
+    """Return the stored value for a work_board_meta key, or None if unset.
+
+    Args:
+        db: SQLAlchemy session.
+        key: Meta key.
+
+    Returns:
+        Optional[str]: The stored value, or None.
+    """
+    row = db.query(WorkBoardMeta).filter(WorkBoardMeta.key == key).one_or_none()
+    return row.value if row is not None else None
+
+
+def _set_meta(db: Session, key: str, value: str) -> None:
+    """Upsert a freeform key/value into work_board_meta (caller commits).
+
+    Args:
+        db: SQLAlchemy session.
+        key: Meta key.
+        value: Opaque string value.
+    """
+    row = db.query(WorkBoardMeta).filter(WorkBoardMeta.key == key).one_or_none()
+    if row is None:
+        db.add(WorkBoardMeta(key=key, value=value))
+    else:
+        row.value = value
+
+
+def _format_git_refresh_age(iso: Optional[str]) -> Optional[str]:
+    """Human 'time ago' label for the git-refresh freshness chip.
+
+    Always neutral (no staleness threshold) -- the chip shows when git was last
+    refreshed, not whether it is "stale".
+
+    Args:
+        iso: Stored ISO-8601 timestamp string, or None.
+
+    Returns:
+        Optional[str]: A label like ``just now`` / ``5m ago`` / ``3h ago`` / ``2d ago``,
+        or None if never refreshed / unparseable.
+    """
+    if not iso:
+        return None
+    try:
+        ts = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    secs = max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+    if secs < 60:
+        return "just now"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m ago"
+    hrs = mins // 60
+    if hrs < 24:
+        return f"{hrs}h ago"
+    return f"{hrs // 24}d ago"
 
 
 def _next_seq_id(db: Session, prefix: str) -> str:
@@ -1300,6 +1369,7 @@ def get_board(db: Session) -> Dict[str, Any]:
         "findings": [_item_to_dict(i) for i in findings],
         "next_move": next_move(db),
         "updated": updated,
+        "git_refreshed_label": _format_git_refresh_age(_get_meta(db, "last_git_refresh")),
     }
 
 
@@ -1440,5 +1510,6 @@ def refresh_git(db: Session, repo_path: str) -> Dict[str, Any]:
             # gh missing/erroring leaves prs untouched (prototype behavior).
             pass
 
+    _set_meta(db, "last_git_refresh", _now_iso())
     db.commit()
     return {"refreshed": True, "branches_updated": branches_updated, "prs_updated": prs_updated}

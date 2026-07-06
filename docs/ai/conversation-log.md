@@ -1,0 +1,41 @@
+# Conversation Log
+
+Append-only cross-session memory for the ContextForge fork (Work Board polish work).
+
+## STILL IN FORCE
+
+### Active direction
+- (SHIPPED 2026-07-06) Premium visual + interactivity polish for the Work Board admin UI — ALL tiers complete and chrome-devtools-verified: Tier 1 signals (verdict borders, PR chips, divergence numerals, running pulse), Tier 2 idiomorph morph (open notes + attention filter + scroll survive every action), Tier 3 (5s scoped poll on running rows + optimistic verdict reflect), Freshness (last-refresh chip). Gateway healthy on --reload; `work_board_meta` table live.
+- Full exact-edit plan: `docs/ai/workboard-polish-spec.md` (drag/Step 12 skipped; Step 11 modified to last-refresh label).
+- Remaining polish backlog (optional): commit the work; header-comment (spec Step 1) still says innerHTML/no-onclick — minor stale accuracy.
+
+### Standing constraints
+- CUSTODIAL: enhance the existing HTMX+Alpine+Tailwind surface in place; reuse the existing palette/badge macros; never rebuild or add a parallel UI (2026-07-06).
+- CSP-safe: @alpinejs/csp forbids inline JS/eval; add JS libs as self-hosted `/static/js/*.js` (script-src 'self'), register HTMX extensions the CSP-safe way (2026-07-06).
+- Migration-safe on SQLite: CREATE TABLE or ALTER-add only; never ALTER-add CHECK; enforce enums in the service layer (2026-07-06).
+- --reload-safe: gateway is always-on; a Python syntax/import error crash-loops it. Every color/utility class used in a template must be rebuilt into `tailwind.min.css` (`npm run build:css`) or it silently falls back (2026-07-06).
+- Model routing for any future workflow: primarily Sonnet 5, Opus only for reasoning-heavy stages; keep fan-out lean (2–3 designers/1 judge/1 reviewer), not panel-sized (2026-07-06).
+
+### Open flags
+- (RESOLVED 2026-07-06) Border bug: fixed via `data-verdict` attr + inline `!important` rules + two-class `.work-board-item.work-board-item--attn` for specificity. Verified per-verdict via chrome-devtools.
+
+### Environment gotchas (verified 2026-07-06 — read before debugging the gateway UI)
+- **Jinja templates do NOT auto-reload** (`templates_auto_reload=False`, [main.py:3455]); an `.html` edit is invisible until the process restarts. `--reload` only watches `.py`. To pick up a template edit: `touch` a watched `.py` (ABSOLUTE path — the persisted cwd is often Atlas-Copilot, so a relative `mcpgateway/...` touch silently no-ops).
+- **An open browser tab holds an SSE connection to `/admin/events`** that blocks uvicorn's graceful `--reload` (hangs at "Waiting for connections to close" → health 000). ALWAYS navigate the browser to `about:blank` BEFORE touching a `.py`, then reconnect. With the SSE dropped, reload completes in ~1s.
+- **chrome-devtools `navigate_page` to the SAME URL (esp. differing only by `#fragment`) is a NO-OP — it does not reload the document**, so edited JS/CSS/templates never load into the running page. To force a real reload: navigate to `about:blank` first, THEN to the target URL. (This burned ~an hour of false "my fix doesn't work" debugging.)
+- **idiomorph's htmx swap path does NOT consult `Idiomorph.defaults.callbacks`** (0 invocations, verified) — a `beforeAttributeUpdated` guard is a dead end. Preserve `<details open>` (and any client-only state) via htmx `beforeSwap` snapshot / `afterSwap` restore in `work-board-live.js` instead. Guard BOTH handlers on `targetsBoard(evt.detail.target)` so the admin shell's background swaps don't consume the snapshot.
+- **Static files serve `Cache-Control: no-store`** — a JS/CSS edit needs only a real browser reload (no gateway restart); but see the navigate no-op above.
+- **idiomorph 0.7.3 `idiomorph-htmx.min.js` is only the htmx shim (754B)** and REQUIRES `idiomorph.min.js` (core, ~9KB) loaded first. The spec assumed a combined build; it is not. Load order: bundle → core → shim → work-board-live.js.
+
+## SESSION DETAIL
+
+## 2026-07-06 — Work Board premium-polish: Tier 1 applied, divide-override border bug found
+
+- **[DECISION]** User approved all 3 tiers of Work Board interactivity polish (signals → morph state-preservation → per-item liveness). Delivered as a workflow-produced 1007-line exact BEFORE/AFTER package (`docs/ai/workboard-polish-spec.md`).
+- **[DIRECTION]** Drag-to-reorder DROPPED by user ("dropdowns and a refresh will suffice"). Skip spec Step 12 + SortableJS entirely (no sortable.min.js, no drag handle, no `/reorder` endpoint, no `reorder_next`). Reason: unnecessary complexity; the spec's own preflight proved drag couldn't reuse `set-priority` (its `_renumber_next` tiebreaks by id, not drop position) and would need a new endpoint.
+- **[DIRECTION]** Freshness chip changed from a staleness cutoff to a plain last-refresh TIME. Remove `_GIT_STALE_MINUTES`/`git_stale`/amber-stale branch from spec Step 11; `get_board` returns a formatted last-refresh time; chip renders gray/neutral. Reason: user preference; also kills the guessy 30-min threshold flag.
+- **[SURFACED/VERIFIED]** Tier-1 verdict borders only render on the FIRST row of each table. Root cause CONFIRMED via chrome-devtools (`divideRuleFound:true`, first-in-body rows show verdict color, rest show gray-700): branches/PRs tbody `divide-y dark:divide-gray-700` sets `border-color: gray-700` on every non-first row, beating `border-l-4 border-<verdict>` by equal-specificity source order. Attention rows survive via their `border-left-color !important`. Status: OPEN, fix known. Action (do first on resume): mirror the `--attn` pattern — add `data-verdict="{{item.verdict}}"` to branches/PRs rows + inline `<style>` `.work-board-item[data-verdict="land"]{border-left-color:#22c55e!important}` (rebase/review→#fbbf24, abandon/close→#d1d5db, unknown→#38bdf8), ordered BEFORE the `--attn` rule so attention amber still wins. Knock-on: Tier-3 optimistic reflect JS must toggle `data-verdict`, not Tailwind classes.
+- **[VERIFIED]** Earlier "agent said border was hardcoded sky-400, I said it rendered gray" reconciled: both true — the class was purged from a stale CSS build; a rebuild fixed presence. The NEW gray-700 issue is a different cause (divide override), not staleness.
+- **[DECISION]** Workflow `wf_005b4f23-795` stopped after the Spec agent completed (Review/fix phase never ran) — user chose to extract the Spec package and self-review per-step instead. Raw Spec captured at `scratchpad/spec-package.md` → copied to `docs/ai/workboard-polish-spec.md`.
+- **[FLAG]** Cannot ping a workflow-internal subagent mid-run; only observe (journal/transcript) or stop+resume (cached agents return instantly, incomplete one re-runs). Established while diagnosing a slow Spec agent that turned out to be a long generation, not a hang.
+- **[VERIFIED]** always-on gateway: launchd `com.chadkuisel.mcp-gateway`, uvicorn `--reload --reload-dir mcpgateway`, :4444, SQLite `mcp.db`, alembic head `5e72814c91e5`. `--reload` added this session (bootout/bootstrap race caused a transient down; re-bootstrap fixed it).

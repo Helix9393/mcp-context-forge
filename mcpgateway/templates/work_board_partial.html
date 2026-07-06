@@ -4,10 +4,15 @@
   mcpgateway.routers.work_board_router:admin_board_partial (and every
   admin/board/* form endpoint, which returns this same template re-rendered).
 
-  Every control is a plain hx-get/hx-post/hx-patch targeting
-  #work-board-content (the wrapper the panel div in admin.html owns) with
-  hx-swap="innerHTML", mirroring the ToolOps wrapper pattern -- no inline
-  onclick (CSP: @alpinejs/csp bundle).
+  This template's root is #work-board-content-inner. Every control targets
+  hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+  -- an idiomorph morph swap (hx-ext="morph" is declared once on the stable
+  #work-board-content wrapper in admin.html and inherits down). Morphing (not a
+  full outerHTML replace) preserves open <details> notes, the attention filter,
+  scroll, and focus across every action; static/js/work-board-live.js snapshots
+  and restores that client-only state, plus optimistic verdict/severity reflect.
+  Only inline handler is the attention-filter checkbox onchange (CSP-legal via
+  script-src-attr); no inline onclick (CSP: @alpinejs/csp bundle).
 -->
 <div id="work-board-content-inner">
 
@@ -65,7 +70,7 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in pending %}
-          <tr id="work-board-pending-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }}">
+          <tr id="work-board-pending-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }}{% if item.run_state == 'running' %} animate-pulse-soft{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">{{ item.title }}</td>
             <td class="px-3 py-2 dark:text-gray-300">{{ item.lane }}</td>
             <td class="px-3 py-2">{{ pending_status_badge(item) }}</td>
@@ -76,7 +81,7 @@
                         class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600 text-white hover:bg-gray-700"
                         hx-post="{{ root_path }}/admin/board/classify"
                         hx-vals='{"item_id": "{{ item.id }}"}'
-                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
                   Classify
                 </button>
                 {% endif %}
@@ -85,7 +90,7 @@
                         class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
                         hx-post="{{ root_path }}/admin/board/launch"
                         hx-vals='{"item_id": "{{ item.id }}"}'
-                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
                   Launch
                 </button>
                 {% endif %}
@@ -94,7 +99,8 @@
                         class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-600 text-white hover:bg-amber-700"
                         hx-post="{{ root_path }}/admin/board/launch-status"
                         hx-vals='{"item_id": "{{ item.id }}"}'
-                        hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                        hx-trigger="click, every 5s"
+                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
                   Refresh status
                 </button>
                 {% endif %}
@@ -130,7 +136,7 @@
     <h2 class="text-2xl font-bold dark:text-gray-200">Work Board</h2>
     <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
       <input type="checkbox" id="work-board-attention-filter" class="h-4 w-4 rounded border-gray-300 text-indigo-600"
-             onchange="document.getElementById('work-board-content-inner').classList.toggle('work-board-filter-attention', this.checked)">
+             onchange="document.getElementById('work-board-content').classList.toggle('work-board-filter-attention', this.checked)">
       Needs attention only
     </label>
   </div>
@@ -138,8 +144,21 @@
   <style>
     /* Pure-CSS filter toggle: hide anything not carrying the needs-attention marker. */
     .work-board-filter-attention .work-board-item:not(.work-board-item--attn) { display: none; }
-    /* Attention rail: needs-attention items get a strong amber left edge regardless of lane. */
-    .work-board-item--attn { border-left-color: #f59e0b !important; }
+    /* Verdict rail: color the left edge by verdict. Uses data-attr + !important because the
+       tbody `divide-y divide-gray-700` rule sets border-color on non-first rows and beats a
+       bare `border-l-4 border-<color>` utility by source order. Attention (below) still wins. */
+    .work-board-item[data-verdict="land"]   { border-left-color: #22c55e !important; }
+    .work-board-item[data-verdict="rebase"],
+    .work-board-item[data-verdict="review"] { border-left-color: #fbbf24 !important; }
+    .work-board-item[data-verdict="abandon"],
+    .work-board-item[data-verdict="close"]  { border-left-color: #d1d5db !important; }
+    .work-board-item[data-verdict="unknown"]{ border-left-color: #38bdf8 !important; }
+    /* Attention rail: needs-attention items get a strong amber left edge regardless of lane.
+       Two-class selector (0,2,0) matches verdict specificity and, placed after, wins. */
+    .work-board-item.work-board-item--attn { border-left-color: #f59e0b !important; }
+    /* Motion as cue: animate left-border/badge recolors (verdict flips, morph patches). */
+    .work-board-item { transition: border-color .2s ease, background-color .2s ease; }
+    .work-board-item .inline-flex { transition: color .2s ease, background-color .2s ease; }
   </style>
 
   {% macro attention_badge(item) %}
@@ -154,9 +173,22 @@
               hx-post="{{ root_path }}/admin/board/acknowledge"
               hx-vals='{"item_id": "{{ item.id }}"}'
               hx-target="#work-board-content-inner"
-              hx-swap="outerHTML">
+              hx-swap="morph:outerHTML transition:true">
         Acknowledge
       </button>
+    {% endif %}
+  {% endmacro %}
+
+  {% macro pr_state_badge(item) %}
+    {% set st = (item.pr_state or '')|lower %}
+    {% if st == 'open' %}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200"><span aria-hidden="true">◦</span>OPEN</span>
+    {% elif st == 'merged' %}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200"><span aria-hidden="true">⇉</span>MERGED</span>
+    {% elif st == 'closed' %}
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300"><span aria-hidden="true">✕</span>CLOSED</span>
+    {% else %}
+      <span class="text-gray-400 dark:text-gray-500">—</span>
     {% endif %}
   {% endmacro %}
 
@@ -189,7 +221,7 @@
           <p class="text-xs text-purple-900 dark:text-purple-100 mb-1"><span class="font-medium">Agent asked:</span> {{ question_note.text }}</p>
           {% endif %}
           <form hx-post="{{ root_path }}/admin/board/note"
-                hx-target="#work-board-content-inner" hx-swap="outerHTML"
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                 class="flex items-center gap-2">
             <input type="hidden" name="item_id" value="{{ item.id }}">
             <input type="text" name="text" required placeholder="Reply..."
@@ -199,7 +231,7 @@
         </div>
       {% else %}
       <form hx-post="{{ root_path }}/admin/board/note"
-            hx-target="#work-board-content-inner" hx-swap="outerHTML"
+            hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
             class="mt-2 flex items-center gap-2">
         <input type="hidden" name="item_id" value="{{ item.id }}">
         <input type="text" name="text" required placeholder="Add a comment..."
@@ -227,7 +259,7 @@
 
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <form hx-post="{{ root_path }}/admin/board/demote"
-              hx-target="#work-board-content-inner" hx-swap="outerHTML"
+              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
               class="flex items-center gap-1">
           <input type="hidden" name="to" value="next">
           <select name="priority" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
@@ -241,7 +273,7 @@
         </form>
 
         <form hx-post="{{ root_path }}/admin/board/demote"
-              hx-target="#work-board-content-inner" hx-swap="outerHTML">
+              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
           <input type="hidden" name="to" value="tangent">
           <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200">
             Park &rarr; Tangent
@@ -277,7 +309,7 @@
             </summary>
             <form hx-patch="{{ root_path }}/admin/board/set-priority"
                   hx-trigger="change"
-                  hx-target="#work-board-content-inner" hx-swap="outerHTML"
+                  hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                   class="flex items-center gap-1 mt-1">
               <input type="hidden" name="item_id" value="{{ item.id }}">
               <label class="text-xs text-gray-500 dark:text-gray-400">Priority</label>
@@ -291,7 +323,7 @@
 
           {% if board.now %}
           <form hx-post="{{ root_path }}/admin/board/promote"
-                hx-target="#work-board-content-inner" hx-swap="outerHTML"
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                 class="flex items-center gap-1">
             <input type="hidden" name="item_id" value="{{ item.id }}">
             <label class="text-xs text-gray-500 dark:text-gray-400">Displace NOW to</label>
@@ -306,7 +338,7 @@
           </form>
           {% else %}
           <form hx-post="{{ root_path }}/admin/board/promote"
-                hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
             <input type="hidden" name="item_id" value="{{ item.id }}">
             <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">
               Promote
@@ -327,12 +359,19 @@
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
     <div class="flex items-center justify-between mb-2">
       <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Branches</h3>
-      <button type="button"
-              class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
-              hx-post="{{ root_path }}/admin/board/refresh"
-              hx-target="#work-board-content-inner" hx-swap="outerHTML">
-        Refresh from git
-      </button>
+      <div class="flex items-center gap-2">
+        {# Freshness chip: neutral last-refresh label (no staleness threshold). #}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300">
+          {% if board.git_refreshed_label %}git refreshed {{ board.git_refreshed_label }}{% else %}never refreshed{% endif %}
+        </span>
+        <button type="button"
+                class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200"
+                hx-post="{{ root_path }}/admin/board/refresh"
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                hx-disabled-elt="this">
+          Refresh from git
+        </button>
+      </div>
     </div>
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
@@ -347,14 +386,19 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in board.branches %}
-          <tr id="work-board-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-sky-400">
+          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'rebase' %}border-amber-400{% elif item.verdict == 'abandon' %}border-gray-300{% else %}border-sky-400{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">{{ item.git_branch or item.title }}</td>
-            <td class="px-3 py-2 dark:text-gray-300">{{ item.git_ahead if item.git_ahead is not none else '—' }} / {{ item.git_behind if item.git_behind is not none else '—' }}</td>
+            <td class="px-3 py-2">
+              {% set _a = item.git_ahead %}{% set _b = item.git_behind %}
+              <span class="transition-colors duration-200 {% if _a is not none and _a > 0 %}text-green-600 dark:text-green-400{% else %}text-gray-400 dark:text-gray-500{% endif %}">{{ _a if _a is not none else '—' }}</span>
+              <span class="text-gray-400 dark:text-gray-500"> / </span>
+              <span class="transition-colors duration-200 {% if _b is not none and _b >= 200 %}text-red-600 dark:text-red-400{% elif _b is not none and _b > 0 %}text-amber-600 dark:text-amber-400{% else %}text-gray-400 dark:text-gray-500{% endif %}">{{ _b if _b is not none else '—' }}</span>
+            </td>
             <td class="px-3 py-2 dark:text-gray-300">{{ item.git_last_commit or '—' }}</td>
             <td class="px-3 py-2">
               <form hx-patch="{{ root_path }}/admin/board/set-verdict"
                     hx-trigger="change"
-                    hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
                 <input type="hidden" name="item_id" value="{{ item.id }}">
                 <select name="verdict" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
                   {% for v in ('land', 'rebase', 'abandon', 'unknown') %}
@@ -391,13 +435,13 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in board.prs %}
-          <tr id="work-board-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-sky-400">
+          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'review' %}border-amber-400{% elif item.verdict == 'close' %}border-gray-300{% else %}border-sky-400{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">#{{ item.pr_number }} {{ item.title }}</td>
-            <td class="px-3 py-2 dark:text-gray-300">{{ item.pr_state or '—' }}</td>
+            <td class="px-3 py-2">{{ pr_state_badge(item) }}</td>
             <td class="px-3 py-2">
               <form hx-patch="{{ root_path }}/admin/board/set-verdict"
                     hx-trigger="change"
-                    hx-target="#work-board-content-inner" hx-swap="outerHTML">
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
                 <input type="hidden" name="item_id" value="{{ item.id }}">
                 <select name="verdict" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
                   {% for v in ('review', 'land', 'close', 'unknown') %}
@@ -424,7 +468,7 @@
     <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Tangents</h3>
 
     <form hx-post="{{ root_path }}/admin/board/tangent"
-          hx-target="#work-board-content-inner" hx-swap="outerHTML"
+          hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
           class="flex items-center gap-2 mb-3">
       <input type="text" name="title" required placeholder="Add tangent..."
              class="flex-1 text-sm px-2 py-1 border border-gray-300 rounded-md dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
@@ -443,7 +487,7 @@
         </div>
         <form hx-patch="{{ root_path }}/admin/board/set-status"
               hx-trigger="change"
-              hx-target="#work-board-content-inner" hx-swap="outerHTML"
+              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
               class="mt-2">
           <input type="hidden" name="item_id" value="{{ item.id }}">
           <select name="status" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
@@ -488,7 +532,7 @@
         <div class="mt-2 flex flex-wrap items-center gap-3">
           <form hx-patch="{{ root_path }}/admin/board/set-status"
                 hx-trigger="change"
-                hx-target="#work-board-content-inner" hx-swap="outerHTML"
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                 class="flex items-center gap-1">
             <input type="hidden" name="item_id" value="{{ item.id }}">
             <label class="text-xs text-gray-500 dark:text-gray-400">Status</label>
@@ -500,7 +544,7 @@
           </form>
           <form hx-patch="{{ root_path }}/admin/board/set-severity"
                 hx-trigger="change"
-                hx-target="#work-board-content-inner" hx-swap="outerHTML"
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
                 class="flex items-center gap-1">
             <input type="hidden" name="item_id" value="{{ item.id }}">
             <label class="text-xs text-gray-500 dark:text-gray-400">Severity</label>

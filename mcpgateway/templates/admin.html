@@ -249,6 +249,15 @@
       window.htmxConfig.inlineScriptNonce = "{{ csp_nonce(request) }}";
     </script>
     <script defer src="{{ root_path }}/static/{{ bundle_js }}"></script>
+    {% if work_board_enabled %}
+    <!-- Work Board liveness: idiomorph core + its htmx morph-swap extension + delegated state guards.
+         Self-hosted under /static/js (CSP 'self' covers these; no nonce). `defer` + document order AFTER
+         the bundle guarantees window.htmx exists when the ext runs htmx.defineExtension('morph', ...),
+         and the core (window.Idiomorph) loads before the ext shim that consumes it. -->
+    <script defer src="{{ root_path }}/static/js/idiomorph.min.js"></script>
+    <script defer src="{{ root_path }}/static/js/idiomorph-htmx.min.js"></script>
+    <script defer src="{{ root_path }}/static/js/work-board-live.js"></script>
+    {% endif %}
     {% if is_admin %}
     <script defer src="{{ root_path }}/static/gantt-chart.js?v=3"></script>
     <script defer src="{{ root_path }}/static/flame-graph.js?v=1"></script>
@@ -4327,7 +4336,7 @@
       {% if work_board_enabled %}
       <!-- Work Board Panel -->
       <div id="work-board-panel" class="tab-panel hidden">
-        <div id="work-board-content" hx-get="{{ root_path }}/admin/board/partial" hx-trigger="load" hx-swap="innerHTML">
+        <div id="work-board-content" hx-ext="morph" hx-get="{{ root_path }}/admin/board/partial" hx-trigger="load" hx-swap="innerHTML">
           <p class="text-sm text-gray-400 p-4">Loading work board...</p>
         </div>
       </div>
