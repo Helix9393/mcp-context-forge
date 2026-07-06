@@ -22,6 +22,19 @@
 -->
 <div id="work-board-content-inner">
 
+  {# Batch C: self-updating board. A hidden poller re-fetches the whole board every
+     20s and morphs it in, so agent-driven changes (run status, new notes, git) appear
+     without a manual refresh. Open notes / scroll / filter survive via the morph guards
+     in work-board-live.js, which also PAUSES this poll while the user is mid-edit.
+     Stable id so idiomorph preserves the node (and its timer) across every swap. #}
+  <div id="wb-poller"
+       hx-get="{{ root_path }}/admin/board/partial"
+       hx-trigger="every 20s"
+       hx-target="#work-board-content-inner"
+       hx-swap="morph:outerHTML transition:true"
+       hx-sync="#work-board-content-inner:replace"
+       style="display:none" aria-hidden="true"></div>
+
   {% if error %}
   <div class="mb-4 rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-800 dark:bg-red-900/30 dark:border-red-800 dark:text-red-200">
     {{ error }}
@@ -34,7 +47,7 @@
        not stored -- one badge string from the (attention, change_kind, run_state) triple. -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Pending changes</h3>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"><span class="wb-sec-ico" aria-hidden="true">📥</span>Pending changes</h3>
       <span class="text-xs text-gray-400 dark:text-gray-500">{{ pending | length }} item{{ 's' if pending | length != 1 else '' }}</span>
     </div>
 
@@ -148,7 +161,12 @@
 
   <!-- Board-level attention filter -->
   <div class="flex items-center justify-between mb-2">
-    <h2 class="text-2xl font-bold dark:text-gray-200">Work Board</h2>
+    <div class="flex items-center gap-2">
+      <h2 class="text-2xl font-bold dark:text-gray-200">Work Board</h2>
+      {# Batch C: live indicator -- a pulsing green dot signalling the board
+         auto-refreshes itself every 20s. Purely a reassurance cue. #}
+      <span class="wb-live" title="This board refreshes itself every 20 seconds"><i class="wb-live-dot"></i>live</span>
+    </div>
     <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
       <input type="checkbox" id="work-board-attention-filter" class="h-4 w-4 rounded border-gray-300 text-indigo-600"
              onchange="document.getElementById('work-board-content').classList.toggle('work-board-filter-attention', this.checked)">
@@ -239,6 +257,61 @@
     .dark .wb-chip--red    { --ct: rgba(239,68,68,.12);  --cf: #f87171; --cb: rgba(239,68,68,.35); }
     .dark .wb-chip--indigo { --ct: rgba(99,102,241,.15); --cf: #a5b4fc; --cb: rgba(99,102,241,.40); }
     .dark .wb-chip--purple { --ct: rgba(168,85,247,.15); --cf: #d8b4fe; --cb: rgba(168,85,247,.40); }
+
+    /* ---- Batch B: green "just saved" flash on the row you changed ---- */
+    @keyframes wbFlash {
+      0%   { box-shadow: 0 0 0 0 rgba(34,197,94,0); background-color: rgba(34,197,94,0); }
+      12%  { box-shadow: 0 0 0 3px rgba(34,197,94,.55); background-color: rgba(34,197,94,.10); }
+      100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); background-color: rgba(34,197,94,0); }
+    }
+    .wb-flash { animation: wbFlash 1.15s ease-out; border-radius: .375rem; }
+
+    /* ---- Batch B: toast stack (bottom-right, over everything) ---- */
+    .wb-toast-wrap { position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 9999; display: flex; flex-direction: column; gap: .5rem; pointer-events: none; }
+    .wb-toast {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .5rem .85rem; border-radius: .5rem;
+      font-size: .8125rem; font-weight: 600; color: #fff;
+      box-shadow: 0 6px 20px rgba(0,0,0,.28);
+      opacity: 0; transform: translateY(10px) scale(.96);
+      transition: opacity .25s ease, transform .25s ease;
+    }
+    .wb-toast--in { opacity: 1; transform: translateY(0) scale(1); }
+    .wb-toast--ok  { background: #16a34a; }
+    .wb-toast--err { background: #dc2626; }
+
+    /* ---- Batch C: "live" pulse indicator next to the heading ---- */
+    .wb-live { display: inline-flex; align-items: center; gap: .3rem; font-size: .6875rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: #16a34a; }
+    .dark .wb-live { color: #4ade80; }
+    .wb-live-dot { width: .5rem; height: .5rem; border-radius: 9999px; background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,.7); animation: wbLivePulse 2s ease-out infinite; }
+    @keyframes wbLivePulse {
+      0%   { box-shadow: 0 0 0 0 rgba(34,197,94,.6); }
+      70%  { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
+      100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+    }
+
+    /* ---- Batch D: inline title edit ---- */
+    .wb-title-edit { cursor: text; border-radius: .25rem; padding: 0 .15rem; margin: 0 -.15rem; transition: background-color .12s ease; }
+    .wb-title-edit:hover { background: rgba(99,102,241,.10); }
+    .wb-title-edit:hover::after { content: " ✎"; font-size: .75em; opacity: .55; }
+    .dark .wb-title-edit:hover { background: rgba(99,102,241,.18); }
+    .wb-inline-editing {
+      width: 100%; min-width: 14rem;
+      font: inherit; font-weight: 500;
+      padding: .1rem .35rem;
+      border: 1px solid #6366f1; border-radius: .3rem;
+      background: #fff; color: #111827;
+      outline: none;
+    }
+    .dark .wb-inline-editing { background: #111827; color: #f3f4f6; border-color: #818cf8; }
+
+    /* ---- Section header landmark icons (fast visual scanning) ---- */
+    .wb-sec-ico { display: inline-block; margin-right: .4rem; font-size: 1rem; line-height: 1; vertical-align: -.05em; }
+
+    /* Respect reduced-motion: kill the animated cues, keep the state colors. */
+    @media (prefers-reduced-motion: reduce) {
+      .wb-flash, .wb-live-dot, .wb-toast { animation: none !important; transition: none !important; }
+    }
   </style>
 
   {# ---- Reusable tap-to-set chip group ----
@@ -348,12 +421,13 @@
 
   <!-- ================= NOW ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Now</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2"><span class="wb-sec-ico" aria-hidden="true">🎯</span>Now</h3>
     {% if board.now %}
     <div id="work-board-{{ board.now.id }}" data-attention="{{ board.now.attention }}" class="work-board-item {{ 'work-board-item--attn' if board.now.attention != 'acknowledged' else '' }} border-l-4 border-indigo-500 rounded-md px-3 py-2 dark:bg-gray-800">
       <div class="flex items-start justify-between gap-2">
         <div>
-          <p class="font-medium dark:text-gray-100">{{ board.now.title }}</p>
+          <p class="font-medium dark:text-gray-100 wb-title-edit" tabindex="0" title="Click to rename"
+             data-wb-edit-title="{{ board.now.id }}" data-wb-title-text="{{ board.now.title }}">{{ board.now.title }}</p>
           <p class="text-xs text-gray-500 dark:text-gray-400">
             {% if board.now.branch %}branch: {{ board.now.branch }} · {% endif %}started: {{ board.now.started or '—' }}
           </p>
@@ -397,13 +471,14 @@
 
   <!-- ================= NEXT ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Up next</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2"><span class="wb-sec-ico" aria-hidden="true">⏭️</span>Up next</h3>
     <div class="space-y-1.5">
       {% for item in board.next %}
       <div id="work-board-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item group {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-gray-300 rounded-md px-3 py-2 dark:bg-gray-800">
         <div class="flex items-start justify-between gap-2">
           <div>
-            <p class="font-medium dark:text-gray-100">{{ item.title }}</p>
+            <p class="font-medium dark:text-gray-100 wb-title-edit" tabindex="0" title="Click to rename"
+               data-wb-edit-title="{{ item.id }}" data-wb-title-text="{{ item.title }}">{{ item.title }}</p>
             <p class="text-xs text-gray-500 dark:text-gray-400">priority {{ item.priority }}{% if item.branch %} · branch: {{ item.branch }}{% endif %}</p>
           </div>
           <div>{{ attention_badge(item) }}</div>
@@ -471,7 +546,7 @@
   <!-- ================= BRANCHES ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Branches</h3>
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"><span class="wb-sec-ico" aria-hidden="true">🌿</span>Branches</h3>
       <div class="flex items-center gap-2">
         {# Freshness chip: neutral last-refresh label (no staleness threshold). #}
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300">
@@ -531,7 +606,7 @@
 
   <!-- ================= PRS ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Pull Requests</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2"><span class="wb-sec-ico" aria-hidden="true">🔀</span>Pull Requests</h3>
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
         <thead class="bg-gray-50 dark:bg-gray-900">
@@ -570,7 +645,7 @@
 
   <!-- ================= TANGENTS ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Side ideas</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2"><span class="wb-sec-ico" aria-hidden="true">💡</span>Side ideas</h3>
 
     <form hx-post="{{ root_path }}/admin/board/tangent"
           hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
@@ -585,7 +660,8 @@
       <div id="work-board-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-purple-400 rounded-md px-3 py-2 dark:bg-gray-800">
         <div class="flex items-start justify-between gap-2">
           <div>
-            <p class="font-medium dark:text-gray-100">{{ item.title }}</p>
+            <p class="font-medium dark:text-gray-100 wb-title-edit" tabindex="0" title="Click to rename"
+               data-wb-edit-title="{{ item.id }}" data-wb-title-text="{{ item.title }}">{{ item.title }}</p>
             <p class="text-xs text-gray-500 dark:text-gray-400">captured: {{ item.captured or '—' }}</p>
           </div>
           <div>{{ attention_badge(item) }}</div>
@@ -607,7 +683,7 @@
 
   <!-- ================= FINDINGS ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Findings</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2"><span class="wb-sec-ico" aria-hidden="true">🔎</span>Findings</h3>
     {% macro severity_badge(item) %}
       {% if item.severity == 'critical' %}
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200">critical</span>

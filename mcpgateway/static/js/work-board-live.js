@@ -114,4 +114,164 @@
     setTimeout(function () { target.style.boxShadow = ""; }, 1200);
   }
   if (stableWrap) stableWrap.addEventListener("click", onJumpClick);
+
+  // ===================================================================
+  // Batch B -- live feedback: "Saved ✓" toast + green flash on the row you
+  // just changed. Both fire only for a REAL user action (a click or a form
+  // submit), never for the 20s board poll or the 5s launch-status poll, so
+  // the board doesn't self-congratulate on background refreshes.
+  // ===================================================================
+
+  // A toast stack, created once and parented to <body> so it survives every
+  // morph swap (it lives outside #work-board-content entirely).
+  var toastWrap = null;
+  function ensureToastWrap() {
+    if (toastWrap && document.body.contains(toastWrap)) return toastWrap;
+    toastWrap = document.createElement("div");
+    toastWrap.className = "wb-toast-wrap";
+    toastWrap.setAttribute("aria-live", "polite");
+    document.body.appendChild(toastWrap);
+    return toastWrap;
+  }
+  function showToast(msg, variant) {
+    var wrap = ensureToastWrap();
+    var t = document.createElement("div");
+    t.className = "wb-toast wb-toast--" + (variant || "ok");
+    t.textContent = msg;
+    wrap.appendChild(t);
+    // force reflow so the enter transition plays, then schedule exit
+    void t.offsetWidth;
+    t.classList.add("wb-toast--in");
+    setTimeout(function () {
+      t.classList.remove("wb-toast--in");
+      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 300);
+    }, 1800);
+  }
+
+  // Was this htmx request triggered by a genuine user gesture (not a poll)?
+  function isUserTriggered(evt) {
+    var cfg = evt.detail && evt.detail.requestConfig;
+    var te = cfg && cfg.triggeringEvent;
+    return !!(te && (te.type === "click" || te.type === "submit"));
+  }
+
+  var pendingFlashId = null;   // id of the .work-board-item to flash after settle
+  var pendingToast = false;    // whether to pop a "Saved ✓" toast after settle
+
+  document.body.addEventListener("htmx:beforeRequest", function (evt) {
+    var elt = evt.detail && evt.detail.elt;
+
+    // ---- Batch C: pause the auto-poll while the user is mid-edit ----
+    // A poll morph would rip out an open inline-edit <input> (the server renders
+    // the static title, not the input) or clobber text being typed into a note.
+    // Skip this one poll cycle; the next fires on schedule.
+    if (elt && elt.id === "wb-poller") {
+      var active = document.activeElement;
+      var typing = active && /^(INPUT|TEXTAREA)$/.test(active.tagName) && targetsBoard(active);
+      if (typing || document.querySelector("#work-board-content .wb-inline-editing")) {
+        evt.preventDefault();
+      }
+      return;
+    }
+
+    // ---- Batch B: remember what to celebrate after the swap settles ----
+    if (isUserTriggered(evt) && targetsBoard(elt)) {
+      pendingToast = true;
+      var item = elt.closest ? elt.closest(".work-board-item") : null;
+      pendingFlashId = item && item.id ? item.id : null;
+    }
+  });
+
+  document.body.addEventListener("htmx:afterSettle", function (evt) {
+    if (!targetsBoard(evt.detail && evt.detail.target)) return;
+    if (pendingToast) { showToast("Saved ✓"); pendingToast = false; }
+    if (pendingFlashId) {
+      var row = document.getElementById(pendingFlashId);
+      if (row) {
+        row.classList.remove("wb-flash");
+        void row.offsetWidth;          // restart the animation if it's mid-play
+        row.classList.add("wb-flash");
+        setTimeout(function () { row.classList.remove("wb-flash"); }, 1200);
+      }
+      pendingFlashId = null;
+    }
+  });
+
+  // Surface backend errors as a red toast instead of a silent no-op.
+  document.body.addEventListener("htmx:responseError", function (evt) {
+    if (!targetsBoard(evt.detail && (evt.detail.target || evt.detail.elt))) return;
+    showToast("Couldn't save — try again", "err");
+  });
+
+  // ===================================================================
+  // Batch D -- inline title edit: click a title to rename in place.
+  // The title carries data-wb-edit-title="<item_id>". Clicking swaps it for an
+  // <input>; Enter or blur PATCHes /admin/board/set-title (morph swap), Escape
+  // cancels. Only human-authored lanes (Now / Next / Side ideas) opt in.
+  // ===================================================================
+  function beginTitleEdit(titleEl) {
+    if (titleEl.querySelector(".wb-inline-editing")) return; // already editing
+    var itemId = titleEl.getAttribute("data-wb-edit-title");
+    var original = titleEl.getAttribute("data-wb-title-text") || titleEl.textContent.trim();
+
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "wb-inline-editing";
+    input.value = original;
+    input.setAttribute("aria-label", "Edit title");
+
+    titleEl.innerHTML = "";
+    titleEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    var done = false;
+    function cancel() {
+      if (done) return;
+      done = true;
+      titleEl.textContent = original;
+    }
+    function commit() {
+      if (done) return;
+      var next = input.value.trim();
+      if (!next || next === original) { cancel(); return; }
+      done = true;
+      // htmx.ajax drives the same morph swap the chips use, so open notes /
+      // scroll / filter are preserved and the flash+toast fire as usual.
+      if (window.htmx) {
+        window.htmx.ajax("PATCH", stableWrapPath("/admin/board/set-title"), {
+          target: "#work-board-content-inner",
+          swap: "morph:outerHTML transition:true",
+          values: { item_id: itemId, title: next },
+        });
+      }
+    }
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    });
+    input.addEventListener("blur", commit);
+  }
+
+  // root_path prefix: read it off any board control that already carries a
+  // resolved hx-post/hx-patch URL, so inline edit hits the same mount point.
+  function stableWrapPath(suffix) {
+    var probe = document.querySelector("#work-board-content [hx-patch], #work-board-content [hx-post]");
+    if (probe) {
+      var url = probe.getAttribute("hx-patch") || probe.getAttribute("hx-post");
+      var marker = "/admin/board/";
+      var i = url.indexOf(marker);
+      if (i >= 0) return url.slice(0, i) + suffix;
+    }
+    return suffix; // root_path is empty -> bare path
+  }
+
+  if (stableWrap) {
+    stableWrap.addEventListener("click", function (ev) {
+      var titleEl = ev.target.closest("[data-wb-edit-title]");
+      if (!titleEl) return;
+      if (ev.target.closest(".wb-inline-editing")) return; // clicking the input itself
+      beginTitleEdit(titleEl);
+    });
+  }
 })();

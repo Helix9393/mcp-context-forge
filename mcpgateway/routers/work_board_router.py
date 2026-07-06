@@ -848,6 +848,37 @@ async def admin_set_priority(
     return _board_partial_after(request, db, lambda: service.update_item(db, item_id, {"priority": priority}, author="operator"))
 
 
+@work_board_admin_router.patch("/set-title", response_class=HTMLResponse)
+@require_permission("admin.system_config", allow_admin_bypass=False)
+async def admin_set_title(
+    request: Request,
+    item_id: str = Form(...),
+    title: str = Form(...),
+    db=Depends(get_db),
+    _user=Depends(get_current_user_with_permissions),
+) -> HTMLResponse:
+    """Patch the ``title`` field (inline click-to-edit on a human-authored item title).
+
+    ``title`` is already a member of the service's ``_PATCHABLE_FIELDS`` allow-list,
+    so no service change is needed. Empty/whitespace titles are rejected here rather
+    than persisting a blank card.
+
+    Args:
+        request: Incoming request.
+        item_id: Target item id.
+        title: New title text (trimmed server-side).
+        db: Database session.
+        _user: Authenticated user context.
+
+    Returns:
+        HTMLResponse: The re-rendered board partial, or an inline error banner.
+    """
+    clean = (title or "").strip()
+    if not clean:
+        return _render_board_partial(request, db, error="Title cannot be empty.")
+    return _board_partial_after(request, db, lambda: service.update_item(db, item_id, {"title": clean}, author="operator"))
+
+
 @work_board_admin_router.post("/acknowledge", response_class=HTMLResponse)
 @require_permission("admin.system_config", allow_admin_bypass=False)
 async def admin_acknowledge(
