@@ -11,6 +11,12 @@
   full outerHTML replace) preserves open <details> notes, the attention filter,
   scroll, and focus across every action; static/js/work-board-live.js snapshots
   and restores that client-only state, plus optimistic verdict/severity reflect.
+
+  Interactivity model (Batch A): every stateful control is a tap-able chip
+  button (the chip_group macro), not a <select>. One tap = one hx-patch/hx-post
+  with an hx-vals payload; the active chip is filled, the rest are tinted
+  outlines. Chip colors are pure CSS custom properties in the <style> block
+  below (no Tailwind classes -> no CSS rebuild needed to add/adjust chips).
   Only inline handler is the attention-filter checkbox onchange (CSP-legal via
   script-src-attr); no inline onclick (CSP: @alpinejs/csp bundle).
 -->
@@ -33,9 +39,13 @@
     </div>
 
     {% macro pending_status_badge(item) %}
-      {% set kind = item.change_kind or 'unclassified' %}
-      {% set run = item.run_state or 'unset' %}
-      {% set label = kind ~ ' · ' ~ run ~ ' · ' ~ item.attention %}
+      {# Plain-language derived status. The raw enum triple (change_kind, run_state,
+         attention) is mapped to human words; the glyph still encodes run_state. #}
+      {% set kind_map = {'impl': 'Code change', 'doc': 'Docs', 'test': 'Tests', 'config': 'Config', 'refactor': 'Refactor', 'chore': 'Chore'} %}
+      {% set run_map = {'running': 'Running now', 'failed': 'Failed', 'applied': 'Done', 'queued': 'Queued'} %}
+      {% set kind_label = kind_map.get(item.change_kind, (item.change_kind or 'Unsorted') | capitalize) %}
+      {% set run_label = run_map.get(item.run_state, '') %}
+      {% set label = kind_label ~ (' · ' ~ run_label if run_label else '') %}
       {% if item.run_state == 'failed' %}
         {% set cls = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200' %}
         {% set glyph = '⚠' %}
@@ -70,7 +80,7 @@
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in pending %}
-          <tr id="work-board-pending-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }}{% if item.run_state == 'running' %} animate-pulse-soft{% endif %}">
+          <tr id="work-board-pending-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }}{% if item.run_state == 'running' %} animate-pulse-soft{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">{{ item.title }}</td>
             <td class="px-3 py-2 dark:text-gray-300">{{ item.lane }}</td>
             <td class="px-3 py-2">{{ pending_status_badge(item) }}</td>
@@ -78,20 +88,24 @@
               <div class="flex flex-wrap items-center gap-1">
                 {% if not item.change_kind or (item.run_state is none and item.change_kind != 'doc') %}
                 <button type="button"
+                        title="Figure out what kind of change this is"
                         class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600 text-white hover:bg-gray-700"
                         hx-post="{{ root_path }}/admin/board/classify"
                         hx-vals='{"item_id": "{{ item.id }}"}'
-                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-                  Classify
+                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                        hx-disabled-elt="this">
+                  Sort this
                 </button>
                 {% endif %}
                 {% if item.change_kind == 'impl' and item.run_state != 'running' %}
                 <button type="button"
+                        title="Start an agent working on this"
                         class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700"
                         hx-post="{{ root_path }}/admin/board/launch"
                         hx-vals='{"item_id": "{{ item.id }}"}'
-                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-                  Launch
+                        hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                        hx-disabled-elt="this">
+                  Start work
                 </button>
                 {% endif %}
                 {% if item.run_state == 'running' %}
@@ -133,13 +147,22 @@
   </div>
 
   <!-- Board-level attention filter -->
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between mb-2">
     <h2 class="text-2xl font-bold dark:text-gray-200">Work Board</h2>
     <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
       <input type="checkbox" id="work-board-attention-filter" class="h-4 w-4 rounded border-gray-300 text-indigo-600"
              onchange="document.getElementById('work-board-content').classList.toggle('work-board-filter-attention', this.checked)">
       Needs attention only
     </label>
+  </div>
+
+  <!-- Color legend: what the left-edge colors mean at a glance. -->
+  <div class="wb-legend">
+    <span><i class="wb-dot-green"></i>ready to merge</span>
+    <span><i class="wb-dot-amber"></i>needs work</span>
+    <span><i class="wb-dot-sky"></i>undecided</span>
+    <span><i class="wb-dot-orange"></i>needs you</span>
+    <span><i class="wb-dot-purple"></i>side idea</span>
   </div>
 
   <style>
@@ -154,13 +177,92 @@
     .work-board-item[data-verdict="abandon"],
     .work-board-item[data-verdict="close"]  { border-left-color: #d1d5db !important; }
     .work-board-item[data-verdict="unknown"]{ border-left-color: #38bdf8 !important; }
-    /* Attention rail: needs-attention items get a strong amber left edge regardless of lane.
-       Two-class selector (0,2,0) matches verdict specificity and, placed after, wins. */
-    .work-board-item.work-board-item--attn { border-left-color: #f59e0b !important; }
+    /* Attention rail: "needs you" wins over verdict. Each attention state gets the rail color
+       that matches its badge, so the left edge and the badge always agree (orange = needs you,
+       purple = follow-up asked, blue = addressed). These sit AFTER --attn so they override it.
+       Specificity (class + attr = 0,2,0) matches verdict and, placed later, wins. */
+    .work-board-item.work-board-item--attn                  { border-left-color: #f97316 !important; }
+    .work-board-item[data-attention="needs_attention"]      { border-left-color: #f97316 !important; }
+    .work-board-item[data-attention="followup_requested"]   { border-left-color: #a855f7 !important; }
+    .work-board-item[data-attention="addressed"]            { border-left-color: #3b82f6 !important; }
     /* Motion as cue: animate left-border/badge recolors (verdict flips, morph patches). */
     .work-board-item { transition: border-color .2s ease, background-color .2s ease; }
     .work-board-item .inline-flex { transition: color .2s ease, background-color .2s ease; }
+
+    /* ---- Color legend dots ---- */
+    .wb-legend { display: flex; flex-wrap: wrap; gap: .85rem; margin-bottom: 1rem; font-size: .75rem; line-height: 1rem; }
+    .wb-legend span { display: inline-flex; align-items: center; gap: .35rem; color: #6b7280; }
+    .dark .wb-legend span { color: #9ca3af; }
+    .wb-legend i { width: .6rem; height: .6rem; border-radius: 9999px; display: inline-block; flex: none; }
+    .wb-dot-green { background: #22c55e; }
+    .wb-dot-amber { background: #f59e0b; }
+    .wb-dot-sky { background: #0ea5e9; }
+    .wb-dot-orange { background: #f97316; }
+    .wb-dot-purple { background: #a855f7; }
+
+    /* ---- Tap-not-type chips (chip_group macro) ----
+       Each control is a segmented row of chips. Active chip = solid fill; idle chips
+       carry a soft tint of their own color so meaning is always visible. Colors are
+       CSS custom properties -- adding/adjusting a chip color needs NO Tailwind rebuild. */
+    .wb-chips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
+    .wb-chips__label { font-size: .75rem; color: #6b7280; margin-right: .15rem; }
+    .dark .wb-chips__label { color: #9ca3af; }
+    .wb-chip {
+      display: inline-flex; align-items: center;
+      padding: .1875rem .5rem;
+      border-radius: 9999px;
+      font-size: .75rem; line-height: 1rem; font-weight: 500;
+      border: 1px solid transparent;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color .15s ease, color .15s ease, border-color .15s ease, transform .1s ease, box-shadow .15s ease;
+    }
+    .wb-chip:hover { transform: translateY(-1px); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+    .wb-chip:active { transform: translateY(0); box-shadow: none; }
+    .wb-chip:focus-visible { outline: 2px solid var(--c); outline-offset: 1px; }
+    .wb-chip[disabled] { opacity: .55; cursor: default; transform: none; box-shadow: none; }
+    .wb-chip--idle   { background: var(--ct); color: var(--cf); border-color: var(--cb); }
+    .wb-chip--idle:hover { border-color: var(--c); }
+    .wb-chip--active { background: var(--c); color: #fff; border-color: var(--c); }
+    /* Color variants: --c solid fill, --ct idle tint bg, --cf idle text, --cb idle border. */
+    .wb-chip--green  { --c: #22c55e; --ct: #f0fdf4; --cf: #15803d; --cb: #bbf7d0; }
+    .wb-chip--amber  { --c: #f59e0b; --ct: #fffbeb; --cf: #b45309; --cb: #fde68a; }
+    .wb-chip--sky    { --c: #0ea5e9; --ct: #f0f9ff; --cf: #0369a1; --cb: #bae6fd; }
+    .wb-chip--gray   { --c: #6b7280; --ct: #f9fafb; --cf: #4b5563; --cb: #e5e7eb; }
+    .wb-chip--red    { --c: #ef4444; --ct: #fef2f2; --cf: #b91c1c; --cb: #fecaca; }
+    .wb-chip--indigo { --c: #6366f1; --ct: #eef2ff; --cf: #4338ca; --cb: #c7d2fe; }
+    .wb-chip--purple { --c: #a855f7; --ct: #faf5ff; --cf: #7e22ce; --cb: #e9d5ff; }
+    .dark .wb-chip--green  { --ct: rgba(34,197,94,.12);  --cf: #4ade80; --cb: rgba(34,197,94,.35); }
+    .dark .wb-chip--amber  { --ct: rgba(245,158,11,.12); --cf: #fbbf24; --cb: rgba(245,158,11,.35); }
+    .dark .wb-chip--sky    { --ct: rgba(14,165,233,.12); --cf: #38bdf8; --cb: rgba(14,165,233,.35); }
+    .dark .wb-chip--gray   { --ct: rgba(148,163,184,.12); --cf: #cbd5e1; --cb: rgba(148,163,184,.30); }
+    .dark .wb-chip--red    { --ct: rgba(239,68,68,.12);  --cf: #f87171; --cb: rgba(239,68,68,.35); }
+    .dark .wb-chip--indigo { --ct: rgba(99,102,241,.15); --cf: #a5b4fc; --cb: rgba(99,102,241,.40); }
+    .dark .wb-chip--purple { --ct: rgba(168,85,247,.15); --cf: #d8b4fe; --cb: rgba(168,85,247,.40); }
   </style>
+
+  {# ---- Reusable tap-to-set chip group ----
+     item_id : target item; method : 'patch'|'post'; endpoint : path after root_path;
+     field   : the form field name the chip sets; options : [{label, value, color}];
+     current : the item's present value (string-compared to mark the active chip);
+     label   : optional leading caption. One tap -> one hx request -> morph swap. #}
+  {% macro chip_group(item_id, method, endpoint, field, options, current, label='') %}
+    <div class="wb-chips" role="group"{% if label %} aria-label="{{ label }}"{% endif %}>
+      {% if label %}<span class="wb-chips__label">{{ label }}</span>{% endif %}
+      {% for opt in options %}
+      {% set is_active = (current | string == opt.value | string) %}
+      <button type="button"
+              class="wb-chip wb-chip--{{ opt.color }} {{ 'wb-chip--active' if is_active else 'wb-chip--idle' }}"
+              aria-pressed="{{ 'true' if is_active else 'false' }}"
+              hx-{{ method }}="{{ root_path }}{{ endpoint }}"
+              hx-vals='{"item_id": "{{ item_id }}", "{{ field }}": "{{ opt.value }}"}'
+              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+              hx-disabled-elt="this">
+        {{ opt.label }}
+      </button>
+      {% endfor %}
+    </div>
+  {% endmacro %}
 
   {% macro attention_badge(item) %}
     {% if item.attention == 'needs_attention' %}
@@ -174,7 +276,8 @@
               hx-post="{{ root_path }}/admin/board/acknowledge"
               hx-vals='{"item_id": "{{ item.id }}"}'
               hx-target="#work-board-content-inner"
-              hx-swap="morph:outerHTML transition:true">
+              hx-swap="morph:outerHTML transition:true"
+              hx-disabled-elt="this">
         Acknowledge
       </button>
     {% endif %}
@@ -247,7 +350,7 @@
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
     <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Now</h3>
     {% if board.now %}
-    <div id="work-board-{{ board.now.id }}" class="work-board-item {{ 'work-board-item--attn' if board.now.attention != 'acknowledged' else '' }} border-l-4 border-indigo-500 rounded-md px-3 py-2 dark:bg-gray-800">
+    <div id="work-board-{{ board.now.id }}" data-attention="{{ board.now.attention }}" class="work-board-item {{ 'work-board-item--attn' if board.now.attention != 'acknowledged' else '' }} border-l-4 border-indigo-500 rounded-md px-3 py-2 dark:bg-gray-800">
       <div class="flex items-start justify-between gap-2">
         <div>
           <p class="font-medium dark:text-gray-100">{{ board.now.title }}</p>
@@ -258,43 +361,46 @@
         <div>{{ attention_badge(board.now) }}</div>
       </div>
 
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <form hx-post="{{ root_path }}/admin/board/demote"
-              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-              class="flex items-center gap-1">
-          <input type="hidden" name="to" value="next">
-          <select name="priority" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-            {% for p in range(1, 6) %}
-            <option value="{{ p }}">{{ p }}</option>
-            {% endfor %}
-          </select>
-          <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200">
-            Demote &rarr; Next
+      <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        {# Move down to Next at a chosen priority -- one tap demotes + sets the slot. #}
+        <div class="wb-chips" role="group" aria-label="Move down to Next">
+          <span class="wb-chips__label">Move down to Next at</span>
+          {% for p in range(1, 6) %}
+          <button type="button"
+                  class="wb-chip wb-chip--gray wb-chip--idle"
+                  hx-post="{{ root_path }}/admin/board/demote"
+                  hx-vals='{"to": "next", "priority": "{{ p }}"}'
+                  hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                  hx-disabled-elt="this">
+            {{ p }}
           </button>
-        </form>
+          {% endfor %}
+        </div>
 
-        <form hx-post="{{ root_path }}/admin/board/demote"
-              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-          <input type="hidden" name="to" value="tangent">
-          <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200">
-            Park &rarr; Tangent
-          </button>
-        </form>
+        <button type="button"
+                title="Move it out of the way into Side ideas"
+                class="wb-chip wb-chip--purple wb-chip--idle"
+                hx-post="{{ root_path }}/admin/board/demote"
+                hx-vals='{"to": "tangent"}'
+                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                hx-disabled-elt="this">
+          Set aside
+        </button>
       </div>
 
       {{ notes_list(board.now) }}
     </div>
     {% else %}
-    <p class="text-sm text-gray-400">NOW is empty. Promote a NEXT item.</p>
+    <p class="text-sm text-gray-400">Nothing in progress. Pick something from the Next list below to start.</p>
     {% endif %}
   </div>
 
   <!-- ================= NEXT ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Next (&le; 5)</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Up next</h3>
     <div class="space-y-1.5">
       {% for item in board.next %}
-      <div id="work-board-{{ item.id }}" class="work-board-item group {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-gray-300 rounded-md px-3 py-2 dark:bg-gray-800">
+      <div id="work-board-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item group {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-gray-300 rounded-md px-3 py-2 dark:bg-gray-800">
         <div class="flex items-start justify-between gap-2">
           <div>
             <p class="font-medium dark:text-gray-100">{{ item.title }}</p>
@@ -303,55 +409,61 @@
           <div>{{ attention_badge(item) }}</div>
         </div>
 
-        <div class="mt-3 flex flex-wrap items-center gap-2">
-          <details class="inline-block">
-            <summary class="text-xs text-gray-500 dark:text-gray-400 cursor-pointer select-none list-none px-1 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
-              &#9998; edit priority
-            </summary>
-            <form hx-patch="{{ root_path }}/admin/board/set-priority"
-                  hx-trigger="change"
-                  hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-                  class="flex items-center gap-1 mt-1">
-              <input type="hidden" name="item_id" value="{{ item.id }}">
-              <label class="text-xs text-gray-500 dark:text-gray-400">Priority</label>
-              <select name="priority" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-                {% for p in range(1, 6) %}
-                <option value="{{ p }}" {% if item.priority == p %}selected{% endif %}>{{ p }}</option>
-                {% endfor %}
-              </select>
-            </form>
-          </details>
+        <div class="mt-3 flex flex-col gap-2">
+          {{ chip_group(item.id, 'patch', '/admin/board/set-priority', 'priority',
+              [{'label': '1', 'value': 1, 'color': 'gray'},
+               {'label': '2', 'value': 2, 'color': 'gray'},
+               {'label': '3', 'value': 3, 'color': 'gray'},
+               {'label': '4', 'value': 4, 'color': 'gray'},
+               {'label': '5', 'value': 5, 'color': 'gray'}],
+              item.priority, 'Priority (1 = top)') }}
 
           {% if board.now %}
-          <form hx-post="{{ root_path }}/admin/board/promote"
-                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-                class="flex items-center gap-1">
-            <input type="hidden" name="item_id" value="{{ item.id }}">
-            <label class="text-xs text-gray-500 dark:text-gray-400">Displace NOW to</label>
-            <select name="displace" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-              <option value="next">next</option>
-              <option value="tangent">tangent</option>
-              <option value="drop">drop</option>
-            </select>
-            <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">
-              Promote
+          <div class="wb-chips" role="group" aria-label="Start this now">
+            <span class="wb-chips__label">Start now — move current task to</span>
+            <button type="button"
+                    class="wb-chip wb-chip--gray wb-chip--idle"
+                    hx-post="{{ root_path }}/admin/board/promote"
+                    hx-vals='{"item_id": "{{ item.id }}", "displace": "next"}'
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                    hx-disabled-elt="this">
+              Next
             </button>
-          </form>
+            <button type="button"
+                    class="wb-chip wb-chip--purple wb-chip--idle"
+                    hx-post="{{ root_path }}/admin/board/promote"
+                    hx-vals='{"item_id": "{{ item.id }}", "displace": "tangent"}'
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                    hx-disabled-elt="this">
+              Side ideas
+            </button>
+            <button type="button"
+                    class="wb-chip wb-chip--red wb-chip--idle"
+                    hx-post="{{ root_path }}/admin/board/promote"
+                    hx-vals='{"item_id": "{{ item.id }}", "displace": "drop"}'
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                    hx-disabled-elt="this">
+              Drop it
+            </button>
+          </div>
           {% else %}
-          <form hx-post="{{ root_path }}/admin/board/promote"
-                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-            <input type="hidden" name="item_id" value="{{ item.id }}">
-            <button type="submit" class="text-xs font-medium px-2 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">
-              Promote
+          <div>
+            <button type="button"
+                    class="wb-chip wb-chip--indigo wb-chip--active"
+                    hx-post="{{ root_path }}/admin/board/promote"
+                    hx-vals='{"item_id": "{{ item.id }}"}'
+                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
+                    hx-disabled-elt="this">
+              Start this now
             </button>
-          </form>
+          </div>
           {% endif %}
         </div>
 
         {{ notes_list(item) }}
       </div>
       {% else %}
-      <p class="text-sm text-gray-400">NEXT is empty.</p>
+      <p class="text-sm text-gray-400">Nothing queued up.</p>
       {% endfor %}
     </div>
   </div>
@@ -379,15 +491,15 @@
         <thead class="bg-gray-50 dark:bg-gray-900">
           <tr>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Branch</th>
-            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Ahead/Behind</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">New commits / Behind main <span class="font-normal normal-case text-gray-400 dark:text-gray-500">(red = far behind)</span></th>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Last commit</th>
-            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Verdict</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Decision</th>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Attention</th>
           </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in board.branches %}
-          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'rebase' %}border-amber-400{% elif item.verdict == 'abandon' %}border-gray-300{% else %}border-sky-400{% endif %}">
+          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'rebase' %}border-amber-400{% elif item.verdict == 'abandon' %}border-gray-300{% else %}border-sky-400{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">{{ item.git_branch or item.title }}</td>
             <td class="px-3 py-2">
               {% set _a = item.git_ahead %}{% set _b = item.git_behind %}
@@ -397,16 +509,12 @@
             </td>
             <td class="px-3 py-2 dark:text-gray-300">{{ item.git_last_commit or '—' }}</td>
             <td class="px-3 py-2">
-              <form hx-patch="{{ root_path }}/admin/board/set-verdict"
-                    hx-trigger="change"
-                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-                <input type="hidden" name="item_id" value="{{ item.id }}">
-                <select name="verdict" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-                  {% for v in ('land', 'rebase', 'abandon', 'unknown') %}
-                  <option value="{{ v }}" {% if item.verdict == v %}selected{% endif %}>{{ v }}</option>
-                  {% endfor %}
-                </select>
-              </form>
+              {{ chip_group(item.id, 'patch', '/admin/board/set-verdict', 'verdict',
+                  [{'label': 'Merge it', 'value': 'land', 'color': 'green'},
+                   {'label': 'Redo on latest', 'value': 'rebase', 'color': 'amber'},
+                   {'label': 'Drop it', 'value': 'abandon', 'color': 'gray'},
+                   {'label': 'Not sure yet', 'value': 'unknown', 'color': 'sky'}],
+                  item.verdict) }}
             </td>
             <td class="px-3 py-2">{{ attention_badge(item) }}</td>
           </tr>
@@ -430,26 +538,22 @@
           <tr>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">PR</th>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">State</th>
-            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Verdict</th>
+            <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Decision</th>
             <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">Attention</th>
           </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200 dark:bg-gray-800 dark:divide-gray-700">
           {% for item in board.prs %}
-          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'review' %}border-amber-400{% elif item.verdict == 'close' %}border-gray-300{% else %}border-sky-400{% endif %}">
+          <tr id="work-board-{{ item.id }}" data-verdict="{{ item.verdict }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 {% if item.verdict == 'land' %}border-green-500{% elif item.verdict == 'review' %}border-amber-400{% elif item.verdict == 'close' %}border-gray-300{% else %}border-sky-400{% endif %}">
             <td class="px-3 py-2 dark:text-gray-200">#{{ item.pr_number }} {{ item.title }}</td>
             <td class="px-3 py-2">{{ pr_state_badge(item) }}</td>
             <td class="px-3 py-2">
-              <form hx-patch="{{ root_path }}/admin/board/set-verdict"
-                    hx-trigger="change"
-                    hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">
-                <input type="hidden" name="item_id" value="{{ item.id }}">
-                <select name="verdict" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-                  {% for v in ('review', 'land', 'close', 'unknown') %}
-                  <option value="{{ v }}" {% if item.verdict == v %}selected{% endif %}>{{ v }}</option>
-                  {% endfor %}
-                </select>
-              </form>
+              {{ chip_group(item.id, 'patch', '/admin/board/set-verdict', 'verdict',
+                  [{'label': 'Merge it', 'value': 'land', 'color': 'green'},
+                   {'label': 'Review it', 'value': 'review', 'color': 'amber'},
+                   {'label': 'Close it', 'value': 'close', 'color': 'gray'},
+                   {'label': 'Not sure yet', 'value': 'unknown', 'color': 'sky'}],
+                  item.verdict) }}
             </td>
             <td class="px-3 py-2">{{ attention_badge(item) }}</td>
           </tr>
@@ -466,19 +570,19 @@
 
   <!-- ================= TANGENTS ================= -->
   <div class="bg-white shadow rounded-lg p-4 mb-4 dark:bg-gray-800">
-    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Tangents</h3>
+    <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Side ideas</h3>
 
     <form hx-post="{{ root_path }}/admin/board/tangent"
           hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
           class="flex items-center gap-2 mb-3">
-      <input type="text" name="title" required placeholder="Add tangent..."
+      <input type="text" name="title" required placeholder="Add a side idea..."
              class="flex-1 text-sm px-2 py-1 border border-gray-300 rounded-md dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-      <button type="submit" class="text-xs font-medium px-3 py-1.5 rounded-md bg-gray-600 text-white hover:bg-gray-700">Add tangent</button>
+      <button type="submit" class="text-xs font-medium px-3 py-1.5 rounded-md bg-gray-600 text-white hover:bg-gray-700">Add a side idea</button>
     </form>
 
     <div class="space-y-1.5">
       {% for item in board.tangents %}
-      <div id="work-board-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-purple-400 rounded-md px-3 py-2 dark:bg-gray-800">
+      <div id="work-board-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} border-l-4 border-purple-400 rounded-md px-3 py-2 dark:bg-gray-800">
         <div class="flex items-start justify-between gap-2">
           <div>
             <p class="font-medium dark:text-gray-100">{{ item.title }}</p>
@@ -486,21 +590,17 @@
           </div>
           <div>{{ attention_badge(item) }}</div>
         </div>
-        <form hx-patch="{{ root_path }}/admin/board/set-status"
-              hx-trigger="change"
-              hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-              class="mt-2">
-          <input type="hidden" name="item_id" value="{{ item.id }}">
-          <select name="status" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-            {% for s in ('parked', 'promoted', 'dropped') %}
-            <option value="{{ s }}" {% if item.status == s %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-          </select>
-        </form>
+        <div class="mt-2">
+          {{ chip_group(item.id, 'patch', '/admin/board/set-status', 'status',
+              [{'label': 'Parked', 'value': 'parked', 'color': 'purple'},
+               {'label': 'Promoted', 'value': 'promoted', 'color': 'green'},
+               {'label': 'Dropped', 'value': 'dropped', 'color': 'gray'}],
+              item.status, 'Status') }}
+        </div>
         {{ notes_list(item) }}
       </div>
       {% else %}
-      <p class="text-sm text-gray-400">No tangents parked.</p>
+      <p class="text-sm text-gray-400">No side ideas parked.</p>
       {% endfor %}
     </div>
   </div>
@@ -514,12 +614,12 @@
       {% elif item.severity == 'warning' %}
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">warning</span>
       {% else %}
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300">advisory</span>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700/40 dark:text-gray-300">FYI</span>
       {% endif %}
     {% endmacro %}
     <div class="space-y-1.5">
       {% for item in board.findings %}
-      <div id="work-board-{{ item.id }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} {% if item.severity == 'critical' %}border-l-4 border-red-500{% elif item.severity == 'warning' %}border-l-4 border-amber-400{% else %}border-l-4 border-gray-300{% endif %} rounded-md px-3 py-2 dark:bg-gray-800">
+      <div id="work-board-{{ item.id }}" data-attention="{{ item.attention }}" class="work-board-item {{ 'work-board-item--attn' if item.attention != 'acknowledged' else '' }} {% if item.severity == 'critical' %}border-l-4 border-red-500{% elif item.severity == 'warning' %}border-l-4 border-amber-400{% else %}border-l-4 border-gray-300{% endif %} rounded-md px-3 py-2 dark:bg-gray-800">
         <div class="flex items-start justify-between gap-2">
           <div>
             <div class="flex items-center gap-2">
@@ -530,31 +630,18 @@
           </div>
           <div>{{ attention_badge(item) }}</div>
         </div>
-        <div class="mt-2 flex flex-wrap items-center gap-3">
-          <form hx-patch="{{ root_path }}/admin/board/set-status"
-                hx-trigger="change"
-                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-                class="flex items-center gap-1">
-            <input type="hidden" name="item_id" value="{{ item.id }}">
-            <label class="text-xs text-gray-500 dark:text-gray-400">Status</label>
-            <select name="status" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-              {% for s in ('open', 'fixing', 'done', 'wontfix') %}
-              <option value="{{ s }}" {% if item.status == s %}selected{% endif %}>{{ s }}</option>
-              {% endfor %}
-            </select>
-          </form>
-          <form hx-patch="{{ root_path }}/admin/board/set-severity"
-                hx-trigger="change"
-                hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true"
-                class="flex items-center gap-1">
-            <input type="hidden" name="item_id" value="{{ item.id }}">
-            <label class="text-xs text-gray-500 dark:text-gray-400">Severity</label>
-            <select name="severity" class="text-xs border border-gray-300 rounded-md px-1 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200">
-              {% for sv in ('advisory', 'warning', 'critical') %}
-              <option value="{{ sv }}" {% if item.severity == sv %}selected{% endif %}>{{ sv }}</option>
-              {% endfor %}
-            </select>
-          </form>
+        <div class="mt-2 flex flex-col gap-2">
+          {{ chip_group(item.id, 'patch', '/admin/board/set-status', 'status',
+              [{'label': 'Open', 'value': 'open', 'color': 'sky'},
+               {'label': 'Fixing', 'value': 'fixing', 'color': 'amber'},
+               {'label': 'Done', 'value': 'done', 'color': 'green'},
+               {'label': "Won't fix", 'value': 'wontfix', 'color': 'gray'}],
+              item.status, 'Status') }}
+          {{ chip_group(item.id, 'patch', '/admin/board/set-severity', 'severity',
+              [{'label': 'FYI', 'value': 'advisory', 'color': 'gray'},
+               {'label': 'Warning', 'value': 'warning', 'color': 'amber'},
+               {'label': 'Critical', 'value': 'critical', 'color': 'red'}],
+              item.severity, 'Severity') }}
         </div>
         {{ notes_list(item) }}
       </div>
