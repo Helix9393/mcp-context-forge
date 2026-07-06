@@ -22,10 +22,16 @@
       {% set can_authorize = can_modify or gateway.visibility == 'public' or (gateway.visibility == 'team' and gateway.teamId and gateway.teamId|string in user_team_roles) %}
       <tr id="gateway-row-{{ gateway.id }}" data-enabled="{{ gateway.enabled|lower }}" data-owner-email="{{ gateway.ownerEmail }}" data-team-id="{{ gateway.teamId or '' }}" data-visibility="{{ gateway.visibility }}">
         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-          <div class="relative"
+          <div class="relative flex items-center gap-1"
                x-data="overflowMenu('gateways-table-wrapper')"
                @click.away="menuOpen = false"
                @keydown.escape="closeMenu()">
+            <!-- Primary action surfaced from the overflow menu (visual-profile: one big obvious action per row) -->
+            <button
+              type="button"
+              @click="dispatch('viewGateway', {{ gateway.id|tojson_attr }})"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+            >View</button>
             <!-- Three-dot trigger -->
             <button
               type="button"
@@ -157,10 +163,13 @@
           {% endif %}
         </td>
         <td class="px-6 py-4 whitespace-nowrap text-sm">
+          {# TODO(visual-profile row 7): only enabled/disabled is exposed here; no health/reachable
+             field on gateway to color-code healthy/degraded/error. Add a health dot if/when the
+             backend surfaces one. Mapping per profile: green=active, gray=inactive/disabled. #}
           {% if gateway.enabled %}
-          <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Active</span>
+          <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200">Active</span>
           {% else %}
-          <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">Inactive</span>
+          <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-700 dark:bg-gray-700/50 dark:text-gray-300">Inactive</span>
           {% endif %}
         </td>
         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
@@ -174,11 +183,11 @@
         </td>
         <td class="px-6 py-4 whitespace-nowrap">
           {% if gateway.visibility == 'private' %}
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">🔒 Private</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200">🔒 Private</span>
           {% elif gateway.visibility == 'team' %}
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">👥 Team</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">👥 Team</span>
           {% elif gateway.visibility == 'public' %}
-          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">🌍 Public</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-200">🌍 Public</span>
           {% else %}
           <span class="text-gray-500 dark:text-gray-300 text-xs">N/A</span>
           {% endif %}

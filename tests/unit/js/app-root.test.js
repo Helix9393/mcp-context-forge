@@ -31,9 +31,9 @@ afterEach(() => {
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 describe("appRoot factory", () => {
-  test("returns darkMode as false initially", () => {
+  test("returns darkMode as true initially", () => {
     const { component } = makeComponent();
-    expect(component.darkMode).toBe(false);
+    expect(component.darkMode).toBe(true);
   });
 
   test("exposes an init method", () => {
@@ -63,10 +63,10 @@ describe("init", () => {
     expect(component.darkMode).toBe(false);
   });
 
-  test("defaults to false when localStorage has no darkMode entry", () => {
+  test("defaults to true when localStorage has no darkMode entry", () => {
     const { component } = makeComponent();
     component.init();
-    expect(component.darkMode).toBe(false);
+    expect(component.darkMode).toBe(true);
   });
 
   test("registers a $watch on darkMode", () => {

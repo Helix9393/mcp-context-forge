@@ -1,9 +1,9 @@
 export function appRoot() {
   return {
-    darkMode: false,
+    darkMode: true,
     init: function () {
       try {
-        this.darkMode = JSON.parse(localStorage.getItem('darkMode') || 'false');
+        this.darkMode = JSON.parse(localStorage.getItem('darkMode') || 'true');
       } catch (e) {
         if (window.Admin) window.Admin.logRestrictedContext(e);
       }

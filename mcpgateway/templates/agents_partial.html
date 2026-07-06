@@ -24,10 +24,16 @@
     {% set can_modify = is_admin or agent.ownerEmail == current_user_email or (agent.visibility == 'team' and agent.teamId and user_team_roles.get(agent.teamId|string) == 'owner') %}
       <tr data-enabled="{{ agent.enabled|lower }}" data-owner-email="{{ agent.ownerEmail }}" data-team-id="{{ agent.teamId or '' }}" data-visibility="{{ agent.visibility }}">
         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-      <div class="relative"
+      <div class="relative flex items-center gap-1"
            x-data="overflowMenu('agents-table-wrapper')"
                @click.away="menuOpen = false"
                @keydown.escape="closeMenu()">
+            <!-- Primary action surfaced from the overflow menu (visual-profile: one big obvious action per row) -->
+            <button
+              type="button"
+              @click="dispatch('viewA2AAgent', {{ agent.id|tojson_attr }})"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+            >View</button>
             <button
               type="button"
               x-ref="trigger"
