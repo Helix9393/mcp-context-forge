@@ -97,4 +97,21 @@
   // Delegated on the stable, never-morphed wrapper -> no re-binding after swaps.
   var stableWrap = document.getElementById("work-board-content");
   if (stableWrap) stableWrap.addEventListener("change", onSelectChange);
+
+  // ----- "Jump to it": scroll to the item WITHOUT changing the URL hash -----
+  // The admin shell is hash-routed; a bare href="#work-board-<id>" changes
+  // location.hash, which the tab router reads as "switch tab", fails to match,
+  // and bounces the user to Overview. Intercept, scroll in place, briefly flash.
+  function onJumpClick(ev) {
+    var link = ev.target.closest("[data-wb-jump]");
+    if (!link) return;
+    ev.preventDefault();
+    var target = document.getElementById(link.getAttribute("data-wb-jump"));
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.style.transition = "box-shadow .3s ease";
+    target.style.boxShadow = "0 0 0 3px rgba(99, 102, 241, 0.6)";
+    setTimeout(function () { target.style.boxShadow = ""; }, 1200);
+  }
+  if (stableWrap) stableWrap.addEventListener("click", onJumpClick);
 })();

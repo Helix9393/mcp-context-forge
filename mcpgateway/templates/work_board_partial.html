@@ -124,6 +124,7 @@
       </div>
       {% if board.next_move.move %}
       <a href="#work-board-{{ board.next_move.move.id }}"
+         data-wb-jump="work-board-{{ board.next_move.move.id }}"
          class="text-xs font-medium px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700">
         Jump to it
       </a>
