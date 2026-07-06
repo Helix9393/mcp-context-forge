@@ -1,6 +1,14 @@
 # Current Task
 
-## CURRENT STATE (2026-07-06, session 4) — 4-part interactivity overhaul COMPLETE + spec fully implemented + tested
+## CURRENT STATE (2026-07-06, session 5) — pivot to whole-gateway config; 3 verified plans committed
+
+Scope widened from Work Board to the whole gateway (user: "you've neglected the other pages… mcp wrapper, local models, plugins"). **Done:** Work Board overhaul fast-forward-merged into `main` (`bba67c9c`, NOT pushed). Then produced 3 machine-specific config plans via parallel analysis subagents + adversarial doubt-review (Opus, live-tested), committed `b603f3aa` in `docs/ai/plans/` — `config-local-models.md`, `config-mcp-wrapper.md`, `config-plugins.md`, `README.md` (order: local-models → mcp-wrapper → plugins). Doubt findings folded in (marked CORRECTED/RESOLVED): killed a false login/CSRF prereq, fixed false-fail verify steps, re-staged PII/Secrets guardrails observe-only-first. Cross-model offered → user skipped.
+
+**In flight / NEXT:** execute **Plan 1 (local models)** when user confirms — nothing configured yet (clean slate, all reversible). Fast win: local model answering in the LLM Settings Test panel.
+
+**PARKED (uncommitted, deferred by user's pivot):** (1) Work Board visual optimization pass — indigo priority chips, attention-row POP, tactile press, in-flight spinners, section icons, card separation, dead-`onSelectChange` removed — live in browser, NOT committed. (2) Terminology/effortless-use brainstorm — normalize "needs you"="Needs attention" etc., keep git terms/fix inconsistencies, add discoverability.
+
+## PRIOR STATE (2026-07-06, session 4) — 4-part interactivity overhaul COMPLETE + spec fully implemented + tested
 
 **DONE.** Goal "implement the workflow spec completely, test all features, optimize UI per Chad's preferences" is met. All committed on `feat/work-board-premium-polish`:
 - `0bb6e2fe` — **Batch A**: `chip_group` Jinja macro replaces every `<select>` with tap-chips; plain-language renames (Decision, Merge it/Redo on latest/Drop it, New commits/Behind main, Sort this, Start work, Side ideas); color legend; humanized pending badge.
