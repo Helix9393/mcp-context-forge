@@ -1,6 +1,20 @@
 # Current Task
 
-## CURRENT STATE (2026-07-06, session 2) — Work Board premium polish: ALL TIERS SHIPPED & VERIFIED
+## CURRENT STATE (2026-07-06, session 4) — 4-part interactivity overhaul COMPLETE + spec fully implemented + tested
+
+**DONE.** Goal "implement the workflow spec completely, test all features, optimize UI per Chad's preferences" is met. All committed on `feat/work-board-premium-polish`:
+- `0bb6e2fe` — **Batch A**: `chip_group` Jinja macro replaces every `<select>` with tap-chips; plain-language renames (Decision, Merge it/Redo on latest/Drop it, New commits/Behind main, Sort this, Start work, Side ideas); color legend; humanized pending badge.
+- `14b84183` — **Batch B/C/D + polish**: "Saved ✓" toast + green row flash on real actions (red toast on error); self-updating `#wb-poller` (20s morph, pauses while editing, `live` pulse); inline title edit (click Now/Next/Side-idea title → PATCH `/admin/board/set-title`, Enter/Escape); section landmark icons (🎯⏭️🌿🔀💡🔎); `prefers-reduced-motion` guard.
+
+**Spec status:** original workboard-polish-spec.md Steps 1–11 all live & re-verified (verdict borders, pr_state_badge, ahead/behind numerals, motion/pulse, idiomorph morph, 5s running poll, `work_board_meta` + freshness chip). **Step 12 (drag-to-reorder) intentionally omitted** — user dropped it ("dropdowns + refresh suffice"); spec itself flagged it needs a new `/reorder` endpoint. Step 11 simplified to a plain "git refreshed Xm ago" timestamp (no staleness threshold) per user.
+
+**Tested live via chrome-devtools:** chip patch → toast+flash+data-verdict reconcile; inline rename round-trip; poller morph preserves open notes; poller pause keeps an open editor intact; add-side-idea form; refresh-from-git updates freshness chip "1h ago"→"just now". No console errors. Test artifacts cleaned (deleted test side-idea t-003; reverted PR p-4 verdict + finding f-001 status + their test notes in mcp.db).
+
+**Known no-op (harmless, optional cleanup):** `onSelectChange` in work-board-live.js (Tier-3 optimistic border reflect) targets `<select>` elements that no longer exist (chips replaced them); it never fires now. Border still updates correctly via the fast morph response. Leave or delete — not a bug.
+
+NEXT ACTION: none required. Optional follow-ups: run gateway test suite; delete the dead `onSelectChange`; consider inline-edit for Findings titles too.
+
+## PRIOR STATE (2026-07-06, session 2) — Work Board premium polish: ALL TIERS SHIPPED & VERIFIED
 
 Complete and chrome-devtools-verified: border fix (data-verdict + inline !important, two-class attn specificity); Tier 2 idiomorph morph (self-hosted core+shim; open notes/attention-filter/scroll survive every swap via beforeSwap/afterSwap snapshot in work-board-live.js — NOT defaults.callbacks, which the htmx path ignores); Tier 3 (5s scoped poll on running rows + optimistic verdict reflect via data-verdict); Freshness (WorkBoardMeta model + migration e3d48e0f3f0f applied, refresh_git stamps last_git_refresh, get_board formats neutral "git refreshed Xm ago" label, gray chip in Branches header). Gateway healthy on --reload; no console errors. **Uncommitted** — working-tree only. Optional leftover: spec Step-1 header-comment rewrite (cosmetic). Env gotchas in conversation-log (Jinja no-autoreload; SSE blocks reload; chrome-devtools same-URL navigate is a no-op; idiomorph htmx ignores defaults.callbacks).
 

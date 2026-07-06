@@ -1,60 +1,81 @@
 # Handoff
 
-## Last Updated: 2026-07-06
+## Last Updated: 2026-07-06 (session 4)
 
 ## Goal
-Ship a premium visual + interactivity polish for the ContextForge **Work Board** admin UI, custodially, all 3 tiers, tier-by-tier with per-step chrome-devtools verification.
+ContextForge **Work Board** admin UI (`http://127.0.0.1:4444/admin/#work-board`) — premium polish, custodial.
 
-## Summary (decisions + why)
-- **All 3 tiers approved** (Tier 1 signals → Tier 2 morph state-preservation → Tier 3 per-item liveness). Built from a workflow-produced exact-edit plan.
-- **Drag-to-reorder DROPPED** (user: "dropdowns and a refresh will suffice"). Skip spec Step 12 + SortableJS entirely. Reason: the plan's own preflight proved drag can't reuse `set-priority` (`_renumber_next` tiebreaks by id, not drop position) and would need a new endpoint — not worth it.
-- **Freshness chip = last-refresh TIME, not a staleness cutoff.** Drop `_GIT_STALE_MINUTES`/`git_stale`/amber-stale from spec Step 11; render a gray/neutral formatted time.
-- **Custodial + CSP-safe + SQLite-safe + --reload-safe** are hard constraints (see Constraints).
-- Workflow `wf_005b4f23-795` was stopped after its Spec agent finished; the Review phase never ran — self-review per-step instead.
+## STATUS: ✅ COMPLETE (session 4)
+Original spec (Steps 1–11) + the full 4-part interactivity overhaul are shipped, chrome-devtools-verified, and committed on `feat/work-board-premium-polish` (`0bb6e2fe` Batch A, `14b84183` Batch B/C/D + polish). Step 12 drag intentionally omitted (user-dropped). See `current-task.md` for the verified feature list, test-artifact cleanup, and the one known harmless no-op (`onSelectChange`). Branch is ready to merge (no PR opened — awaiting user). The sections below are the original session-2 plan, kept for reference.
 
-## Current task
-Fix the confirmed Tier-1 **border-render bug FIRST**, then continue Tier 2 → Tier 3 → Freshness.
+---
 
-**Bug (root cause confirmed via chrome-devtools):** verdict left-borders render only on the *first* row of each branches/PRs table. The tbody `divide-y divide-gray-200 dark:divide-gray-700` generates a rule that sets `border-color: gray-700` on every non-first row, overriding `border-l-4 border-<verdict>` (equal specificity → divide wins by source order). First-in-body rows and attention rows (`border-left-color !important`) escape.
-**Fix:** in `mcpgateway/templates/work_board_partial.html`, add `data-verdict="{{ item.verdict }}"` to the branches AND PRs `<tr>`, and add inline `<style>` rules (place them in the existing `<style>` block BEFORE the `.work-board-item--attn` rule so attention amber still wins):
-```
-.work-board-item[data-verdict="land"]   { border-left-color:#22c55e !important; }
-.work-board-item[data-verdict="rebase"],
-.work-board-item[data-verdict="review"] { border-left-color:#fbbf24 !important; }
-.work-board-item[data-verdict="abandon"],
-.work-board-item[data-verdict="close"]  { border-left-color:#d1d5db !important; }
-.work-board-item[data-verdict="unknown"]{ border-left-color:#38bdf8 !important; }
-```
-The Jinja `{% if item.verdict ... %}border-<x>{% endif %}` classes can stay (harmless) or be removed; the inline rules are what render. **Knock-on:** the Tier-3 optimistic reflect JS must toggle `data-verdict`, NOT Tailwind classes (same divide-override reason). Verify: chrome-devtools `getComputedStyle(row).borderLeftColor` per verdict → land green(34,197,94), rebase/review amber(251,191,36), abandon/close gray(209,213,219), unknown sky(56,189,248), attention amber(245,158,11).
+## (session 2 plan — reference only, now implemented)
+ContextForge Work Board — premium polish, custodial. **The active job now is a big 4-part interactivity overhaul + plain-language pass** the user just approved.
 
-## State (files changed this session — all in `/Users/chadkuisel/Workspace/mcp-context-forge`)
-- `~/Library/LaunchAgents/com.chadkuisel.mcp-gateway.plist` — added `--reload --reload-dir <repo>/mcpgateway` (verified healthy).
-- `mcpgateway/templates/work_board_partial.html` — Tier 1: verdict-color border conditionals on branches (line ~350) + PRs (~394) rows; `pr_state_badge` macro (after `attention_badge`); PR state cell uses it (~396); divergence numerals cell (~352); `animate-pulse-soft` on running pending row (~68); motion-cue transitions added to the inline `<style>`.
-- `tailwind.config.js` — added `safelist` (border/text colors + `animate-pulse-soft`; drag classes intentionally omitted).
-- `mcpgateway/static/css/tailwind.min.css` — rebuilt (`npm run build:css`); confirmed `border-green-500`, `text-amber-600/red-600/green-600`, `animate-pulse-soft`, `bg-purple-100` all present.
-- `docs/ai/workboard-polish-spec.md` — the full 1007-line exact-edit plan (copied from scratchpad).
-- Verified: template parses; gateway `/health` 200.
+## DONE & COMMITTED this session (branch `feat/work-board-premium-polish`)
+- Border fix, Tier 1 signals, Tier 2 idiomorph morph, Tier 3 poll+optimistic reflect, Freshness chip — all shipped & chrome-devtools-verified (commit `29d7c771`, which also force-added the gitignored `tailwind.min.css`).
+- **Jump-to-it fix** (commit `cdbe6732`): the anchor changed `location.hash` to `#work-board-<id>`, which the hash-routed admin shell read as a tab switch → bounced to Overview and hid the board. Fixed via `data-wb-jump` attr on the anchor + a delegated click handler in `work-board-live.js` that `preventDefault`s, `scrollIntoView`s in place, and flashes the target indigo. Verified: hash stays `#work-board`, board stays, target flashes.
+- Ran a `reasoning-analysis` (Opus) UX critique (agentId `a02124f91daf24c4c`) — findings folded into "Plan" below.
 
-## Remaining (in order)
-1. **Border fix** above (verify per-verdict).
-2. **Tier 2** (spec Steps 7–8, idiomorph ONLY): download `idiomorph-htmx.min.js` to `mcpgateway/static/js/`; add `hx-ext="morph"` to `#work-board-content` in `admin.html` (~line 4330) + the three defer script tags after the bundle (~line 251, gated on `work_board_enabled`); global-replace the **18** `hx-swap="outerHTML"` → `hx-swap="morph:outerHTML transition:true"` in the partial; create `work-board-live.js` (morph `<details>` open-state guard + attention-filter persistence on stable wrapper + optimistic reflect via `data-verdict`). Also apply spec Step 1 header-comment rewrite once morph lands. Retarget the attention-filter checkbox `onchange` to `#work-board-content`.
-3. **Tier 3** (Step 9): `hx-trigger="click, every 5s"` on the running-row "Refresh status" button (scoped — only renders for `run_state=='running'`). Optimistic reflect is in `work-board-live.js`. NO drag.
-4. **Freshness** (Steps 10–11, MODIFIED): `WorkBoardMeta` model in `db_work_board.py`; migration `mcpgateway/alembic/versions/e3d48e0f3f0f_add_work_board_meta_table.py` (CREATE TABLE, `down_revision="5e72814c91e5"`, idempotent guard); `refresh_git` writes `last_git_refresh`; `get_board` returns a formatted last-refresh TIME (no staleness cutoff); Branches-header chip shows it gray.
-- Rebuild CSS after any new class; verify each tier via chrome-devtools.
+## ACTIVE TASK — 4-part interactivity overhaul (user picked ALL 4 + bundled renames)
+User: "i also need a fuck ton more interactivity." Approved all four via AskUserQuestion, plus the plain-language renames come bundled:
+1. **Tap-not-type** — replace EVERY `<select>` dropdown with clickable colored chip buttons (tap "Merge it"/"Drop it" directly). One tap = done. This also converts the jargon into plain buttons.
+2. **Live feedback + motion** — "Saved ✓" flash after changes, toast pop-ups, button spinners (hx-disabled-elt/hx-indicator), row glow/slide on change, hover highlights, maybe count-up numerals.
+3. **Inline editing** — click title/priority/note to edit in place; quick "＋ note" / "✓ mark done" per row. (Title edit needs a NEW endpoint — see below.)
+4. **Self-updating board** — auto-poll refresh (whole board, ~15–30s, morphs so open notes/scroll survive), a "live" pulse indicator, new items slide in.
+
+### Endpoint inventory (all EXIST, all take `Form(...)` params — chips drive them via `hx-vals`, NO backend change needed except inline-title)
+`mcpgateway/routers/work_board_router.py` `work_board_admin_router` (prefix `/admin/board`):
+- POST `/note`, `/tangent`, `/promote`, `/demote`, `/acknowledge`, `/classify`, `/launch`, `/launch-status`, `/refresh`
+- PATCH `/set-verdict` (item_id, verdict), `/set-status` (item_id, status alias), `/set-severity` (item_id, severity), `/set-priority` (item_id, priority:int)
+- All call `service.update_item(db, item_id, {...}, author="operator")` via `_board_partial_after`. A `<button hx-patch=".../set-verdict" hx-vals='{"item_id":"X","verdict":"land"}' hx-target="#work-board-content-inner" hx-swap="morph:outerHTML transition:true">` works directly.
+- **Inline title edit is the ONLY new backend needed:** add `/set-title` (item_id, title) → `service.update_item(db, item_id, {"title": title})`. Confirm `update_item` accepts a `title` key first.
+
+### Batch A design (IN PROGRESS — start here)
+Build a reusable Jinja **`chip_group` macro**: params (item_id, endpoint, field_name, options=[{label,value,color}], current_value) → renders a segmented row of chip `<button>`s, active one filled/others outline, each `hx-patch|post` the endpoint with `hx-vals` + morph swap. Then replace each control:
+- **Branches verdict** (~line 405, select name=verdict, options land/rebase/abandon/unknown) → chips **Merge it / Redo on latest / Drop it / Not sure yet**.
+- **PRs verdict** (~448, options land/review/close/unknown) → **Merge it / Review it / Close it / Not sure yet**.
+- **Findings severity** (~538, critical/warning/advisory) → chips; **status** select → chips (`wontfix`→"Won't fix").
+- **Tangents status** (~494, parked/promoted/dropped) → chips, add label.
+- **NEXT edit-priority** (~317, 1–5 select) → chips or +/- stepper (add "1 = top" hint); **NOW demote priority** (~266) likewise.
+- **NEXT promote "Displace NOW to"** (~331, next/tangent/drop) → buttons.
+
+### Bundled plain-language renames (from the critique) — before → after
+- `pending_status_badge` macro (~30–59): map raw enum triple → plain, keep glyph. e.g. `impl`→"Code change", `running`→"Running now", `needs_attention`→"Needs you". Currently renders `impl · running · needs_attention`.
+- Column **"Verdict"** → **"Decision"** (branches ~384, PRs ~433).
+- **"Ahead / Behind"** header (~382) → **"New commits / Behind main"** + hint "red = far behind". (numerals colored at ~393–396.)
+- **"Classify"** btn (~85) → **"Sort this"** + `title="Figure out what kind of change this is"`; **"Launch"** (~94) → **"Start work"** + `title="Start an agent working on this"`.
+- **"Tangents"** (~467) → **"Side ideas"**, "Add tangent…" → "Add a side idea…".
+- **"Promote"** → "Make this the current task" (or keep + tooltip); "Displace NOW to" → "Move current task to"; NOW "Demote → Next"/"Park → Tangent" → "Move down to Next"/"Set aside".
+- NOW empty (~288): "Promote a NEXT item." → **"Nothing in progress. Pick something from the Next list below to start."**
+- Small enums: `wontfix`→"Won't fix", `advisory`→"FYI"/"low"; label the unlabeled NOW priority select (~266); "Next (≤ 5)" header (~294) less mathy.
+- **Add a color legend chip-row** under the "Work Board" heading (~137): 🟩 ready to merge · 🟨 needs work · 🟦 undecided · 🟧 needs you.
+- **Consistency bug:** amber attention rail shows whenever `attention != 'acknowledged'` (~73/250/297) but the "Needs attention" chip only renders for `needs_attention` (~166) — color & chip disagree. Make them consistent.
+
+### Batch B/C/D notes
+- B: flash the changed row on `htmx:afterSwap` in work-board-live.js (reuse the box-shadow flash helper already added for Jump); add a toast container in admin.html + trigger via `HX-Trigger` response header or client-side; `hx-disabled-elt="this"` on chips for spinners; hover highlight via CSS.
+- C: `hx-trigger="every 20s"` on `#work-board-content` wrapper (or a hidden poller) → GET `/admin/board/partial`, morph. Existing beforeSwap/afterSwap guards keep open notes/scroll. A small "● live" pulse chip. Slide-in via a CSS keyframe on newly-added rows.
+- D: `/set-title` endpoint + click-to-edit (details/contenteditable or swap-to-input pattern).
+
+## Files (all under `/Users/chadkuisel/Workspace/mcp-context-forge`)
+- Template: `mcpgateway/templates/work_board_partial.html` (the whole board; inline `<style>` at ~138).
+- Shell: `mcpgateway/templates/admin.html` (script loads ~251, `hx-ext="morph"` wrapper ~4335).
+- Liveness JS: `mcpgateway/static/js/work-board-live.js` (morph guards + filter resync + optimistic reflect + Jump handler + a box-shadow flash helper).
+- Router: `mcpgateway/routers/work_board_router.py`. Service: `mcpgateway/services/work_board_service.py` (`update_item`, `get_board` ~1292, `refresh_git` ~1444, freshness helpers ~87). Model: `mcpgateway/db_work_board.py` (+ `WorkBoardMeta`).
+- Self-hosted: `mcpgateway/static/js/idiomorph.min.js` (core) + `idiomorph-htmx.min.js` (shim). CSS build: `mcpgateway/static/css/tailwind.min.css` (GITIGNORED — force-add or rely on `npm run build:css`); safelist in `tailwind.config.js`.
+
+## HARD environment gotchas (verified — read before touching the live UI)
+- **Jinja does NOT auto-reload** (`templates_auto_reload=False`). Template `.html` edits are invisible until the process restarts. `--reload` only watches `.py`. To apply a template edit: `touch /Users/chadkuisel/Workspace/mcp-context-forge/mcpgateway/routers/work_board_router.py` (ABSOLUTE path — persisted cwd is often Atlas-Copilot, so a relative touch silently no-ops).
+- **The `/admin/events` SSE from any open admin browser tab blocks the graceful `--reload`** (hangs "Waiting for connections to close" → health 000). BEFORE touching a `.py`: navigate the browser to `about:blank` AND close any extra admin tabs (`close_page`), then touch, then poll health. With SSE dropped it reloads in ~1s.
+- **chrome-devtools `navigate_page` to the SAME url (esp. only a `#fragment` differs) is a NO-OP — no reload**, so edited JS/CSS/templates never load into the running page. Always go `about:blank` → target url to force a real reload.
+- **idiomorph's htmx path ignores `Idiomorph.defaults.callbacks`** — preserve client state via htmx `beforeSwap`/`afterSwap` snapshot in work-board-live.js, guarded on `targetsBoard(evt.detail.target)`.
+- Static files serve `Cache-Control: no-store` (JS/CSS edits need only a real browser reload, no restart). `getComputedStyle` after a bare `setAttribute` can read stale — a `display` toggle forces restyle (only matters for tests; real repaint is automatic).
+- Any NEW Tailwind class must be rebuilt: `npm run build:css`, then it's in `tailwind.min.css`. Safelist JS-injected dynamic classes in `tailwind.config.js`. Verify chip colors/borders survive the build.
+- Verify each batch via chrome-devtools; confirm `/health` 200 after every `.py`/template restart.
 
 ## Blockers
-None awaiting user input. Proceed with the border fix, then tiers in order.
+None. Continue Batch A: build the `chip_group` macro, then convert controls + apply renames + legend, rebuild CSS, restart, verify. Then B → C → D. Commit per batch on `feat/work-board-premium-polish`.
 
 ## References
-- Plan: `docs/ai/workboard-polish-spec.md` (12 steps; ignore Step 12/drag; Step 11 modified to last-refresh-time).
-- Live UI: `http://127.0.0.1:4444/admin#work-board`. Template: `mcpgateway/templates/work_board_partial.html`. Shell: `mcpgateway/templates/admin.html`. Router: `mcpgateway/routers/work_board_router.py` (`_render_board_partial` ~588, `admin_refresh_git` ~961). Service: `mcpgateway/services/work_board_service.py` (`get_board`, `refresh_git` ~1328). Model: `mcpgateway/db_work_board.py`.
-- Alembic head: `5e72814c91e5`. Migration id to use: `e3d48e0f3f0f`.
-- Workflow script (if re-running): `.claude/projects/-Users-chadkuisel-Workspace-Atlas-Copilot/cf6e9b56-ea58-4a91-9c67-d9b354688b24/workflows/scripts/workboard-premium-polish-wf_005b4f23-795.js`.
-- Visual profile (cockpit register): `<session scratchpad>/visual-profile.md`.
-
-## Constraints (standing, not yet in CLAUDE.md)
-- CUSTODIAL: enhance in place, reuse the existing palette/badge macros, no rebuild, no parallel UI.
-- CSP-safe: no inline JS/eval; self-host libs under `/static/js` (script-src 'self'); register HTMX exts the CSP way.
-- SQLite migrations: CREATE/ALTER-add only, never ALTER-add-CHECK; enforce enums in the service layer.
-- --reload-safe: correct Python or the always-on gateway crash-loops. Any new Tailwind class must be rebuilt into `tailwind.min.css`.
-- Beware the tbody `divide-*` override: any per-row left-border color needs `!important` (data-attribute + inline style), not a bare Tailwind border class.
+- Spec (original polish): `docs/ai/workboard-polish-spec.md`. Full UX critique = this handoff's "renames" + "Batch A" sections (agent `a02124f91daf24c4c`).
