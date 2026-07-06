@@ -1498,6 +1498,9 @@ async def test_no_token_auth_disabled_platform_admin():
     mock_settings.auth_required = False
     mock_settings.allow_unauthenticated_admin = True
     mock_settings.platform_admin_email = "admin@platform.com"
+    # The unauthenticated-admin override is honored only on a loopback bind
+    # (_is_loopback_bind guard). Real single-user deployments run on 127.0.0.1.
+    mock_settings.host = "127.0.0.1"
 
     with patch("mcpgateway.middleware.rbac.settings", mock_settings):
         result = await rbac.get_current_user_with_permissions(mock_request, credentials=mock_credentials, jwt_token=None)

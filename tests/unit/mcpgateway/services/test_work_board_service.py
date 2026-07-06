@@ -724,3 +724,258 @@ class TestRunStatus:
         assert result["run_state"] == "applied"
         refreshed = wbs.get_item(db_session, item.id)
         assert refreshed.run_state == "applied"
+
+
+# ---------------------------------------------------------------------------
+# classify_change (design doc §3) -- deterministic doc-vs-impl rule.
+# ---------------------------------------------------------------------------
+
+
+_APPEND_NOTE = """DOC: notes/target.md
+```append
+new content
+```"""
+
+
+class TestClassifyChange:
+    """classify_change: doc-match happy path, every fallthrough-to-impl branch, and
+    symlink/`..` escape containment."""
+
+    def test_doc_match_happy_path_appends_and_marks_applied(self, db_session, tmp_path):
+        """A well-formed DOC: note with an append block inside the repo classifies as
+        'doc', applies immediately, and the file receives the appended content."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        target = repo / "notes" / "target.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("original\n")
+
+        item = wbs.create_item(db_session, "next", {"title": "Doc update"})
+        wbs.add_note(db_session, item.id, _APPEND_NOTE, author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "doc"
+        assert result.run_state == "applied"
+        assert result.target_doc == "notes/target.md"
+        assert result.attention == "addressed"
+        assert target.read_text() == "original\nnew content\n"
+        assert any("applied doc-change -> notes/target.md" in (n.text or "") for n in result.notes)
+
+    def test_no_doc_note_falls_through_to_impl(self, db_session, tmp_path):
+        """No DOC: note at all classifies as 'impl' with run_state=None; nothing written."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        item = wbs.create_item(db_session, "next", {"title": "Plain item"})
+        wbs.add_note(db_session, item.id, "please implement this feature", author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert list(repo.iterdir()) == []
+
+    def test_doc_path_outside_repo_falls_through_to_impl(self, db_session, tmp_path):
+        """A DOC: path pointing outside the configured repo classifies as 'impl'; file untouched."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_text("original\n")
+
+        item = wbs.create_item(db_session, "next", {"title": "Escaping item"})
+        note = f"DOC: {outside}\n```append\nnew content\n```"
+        wbs.add_note(db_session, item.id, note, author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert outside.read_text() == "original\n"
+
+    def test_disallowed_extension_falls_through_to_impl(self, db_session, tmp_path):
+        """A DOC: path with a non-allowlisted extension (.py) classifies as 'impl'; file untouched."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        target = repo / "script.py"
+        target.write_text("original\n")
+
+        item = wbs.create_item(db_session, "next", {"title": "Code note mislabeled as doc"})
+        wbs.add_note(db_session, item.id, "DOC: script.py\n```append\nnew content\n```", author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert target.read_text() == "original\n"
+
+    def test_missing_append_block_falls_through_to_impl(self, db_session, tmp_path):
+        """A DOC: note with no fenced ```append block classifies as 'impl'; file untouched."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        target = repo / "notes.md"
+        target.write_text("original\n")
+
+        item = wbs.create_item(db_session, "next", {"title": "No append block"})
+        wbs.add_note(db_session, item.id, "DOC: notes.md\nplease rewrite this doc entirely", author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert target.read_text() == "original\n"
+
+    def test_symlink_escape_rejected_no_write_outside_repo(self, db_session, tmp_path):
+        """Load-bearing containment test: a DOC: path that resolves outside the repo via a
+        symlink must be rejected -- classified 'impl', and the out-of-repo target is never
+        written to, even though the naive (non-realpath) join would land inside the repo."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        outside_target = outside_dir / "secret.md"
+        outside_target.write_text("original\n")
+
+        # Symlink inside the repo pointing outside it.
+        escape_link = repo / "escape.md"
+        escape_link.symlink_to(outside_target)
+
+        item = wbs.create_item(db_session, "next", {"title": "Symlink escape attempt"})
+        wbs.add_note(db_session, item.id, "DOC: escape.md\n```append\nmalicious content\n```", author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert outside_target.read_text() == "original\n"
+
+    def test_dotdot_escape_rejected_no_write_outside_repo(self, db_session, tmp_path):
+        """A DOC: path using '..' to climb out of the repo is rejected the same way."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside_target = tmp_path / "outside.md"
+        outside_target.write_text("original\n")
+
+        item = wbs.create_item(db_session, "next", {"title": "Dotdot escape attempt"})
+        wbs.add_note(db_session, item.id, "DOC: ../outside.md\n```append\nmalicious content\n```", author="operator")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(settings, "work_board_git_repo", str(repo))
+            result = wbs.classify_change(db_session, item.id)
+
+        assert result.change_kind == "impl"
+        assert result.run_state is None
+        assert outside_target.read_text() == "original\n"
+
+
+# ---------------------------------------------------------------------------
+# get_pending (design doc §2) -- ordering + shape.
+# ---------------------------------------------------------------------------
+
+
+class TestGetPending:
+    """get_pending: only change_kind-tagged items, ordered run_state then severity, full shape."""
+
+    def test_excludes_items_without_change_kind(self, db_session):
+        """Plain items (change_kind=None) never appear in the pending view."""
+        wbs.create_item(db_session, "next", {"title": "Untagged"})
+        assert wbs.get_pending(db_session) == []
+
+    def test_orders_by_run_state_then_severity_nulls_last(self, db_session):
+        """failed -> running -> queued -> applied, NULL run_state last; severity breaks ties."""
+        applied = wbs.create_item(db_session, "next", {"title": "Applied item"})
+        wbs.set_change_state(db_session, applied.id, change_kind="doc", run_state="applied", author="agent")
+
+        queued = wbs.create_item(db_session, "next", {"title": "Queued item"})
+        wbs.set_change_state(db_session, queued.id, change_kind="impl", run_state="queued", author="agent")
+
+        running = wbs.create_item(db_session, "next", {"title": "Running item"})
+        wbs.set_change_state(db_session, running.id, change_kind="impl", run_state="running", author="agent")
+
+        failed = wbs.create_item(db_session, "next", {"title": "Failed item"})
+        wbs.set_change_state(db_session, failed.id, change_kind="impl", run_state="failed", author="agent")
+
+        null_state = wbs.create_item(db_session, "findings", {"title": "Null state item", "severity": "critical", "status": "open"})
+        wbs.set_change_state(db_session, null_state.id, change_kind="doc", author="agent")
+
+        pending = wbs.get_pending(db_session)
+        ids_in_order = [p["id"] for p in pending]
+        assert ids_in_order == [failed.id, running.id, queued.id, applied.id, null_state.id]
+
+    def test_severity_breaks_ties_within_same_run_state(self, db_session):
+        """Within the same run_state bucket, higher severity (critical) sorts first."""
+        advisory = wbs.create_item(db_session, "findings", {"title": "Advisory", "severity": "advisory", "status": "open"})
+        wbs.set_change_state(db_session, advisory.id, change_kind="impl", run_state="queued", author="agent")
+
+        critical = wbs.create_item(db_session, "findings", {"title": "Critical", "severity": "critical", "status": "open"})
+        wbs.set_change_state(db_session, critical.id, change_kind="impl", run_state="queued", author="agent")
+
+        pending = wbs.get_pending(db_session)
+        ids_in_order = [p["id"] for p in pending]
+        assert ids_in_order == [critical.id, advisory.id]
+
+    def test_shape_includes_documented_fields_and_latest_notes(self, db_session):
+        """Each row carries id/title/lane/change_kind/target_doc/run_state/attention plus the
+        latest agent and operator notes."""
+        item = wbs.create_item(db_session, "next", {"title": "Shaped item"})
+        wbs.add_note(db_session, item.id, "first operator note", author="operator")
+        wbs.set_change_state(db_session, item.id, change_kind="impl", run_state="queued", target_doc=None, author="agent")
+        wbs.add_note(db_session, item.id, "second operator note", author="operator")
+        wbs.add_note(db_session, item.id, "PROPOSED: do X", author="agent")
+
+        pending = wbs.get_pending(db_session)
+        assert len(pending) == 1
+        row = pending[0]
+        assert row["id"] == item.id
+        assert row["title"] == "Shaped item"
+        assert row["lane"] == "next"
+        assert row["change_kind"] == "impl"
+        assert row["target_doc"] is None
+        assert row["run_state"] == "queued"
+        assert row["attention"] == item.attention
+        assert row["latest_operator_note"]["text"] == "second operator note"
+        assert row["latest_agent_note"]["text"] == "PROPOSED: do X"
+
+    def test_row_with_no_operator_notes_reports_none_for_operator(self, db_session):
+        """An item with only an agent-authored system note reports None for the operator
+        note field (no operator note exists), while the agent field reflects that system note."""
+        item = wbs.create_item(db_session, "next", {"title": "No operator notes"})
+        wbs.set_change_state(db_session, item.id, change_kind="impl", run_state="queued", author="agent")
+
+        pending = wbs.get_pending(db_session)
+        row = pending[0]
+        assert row["latest_operator_note"] is None
+        assert row["latest_agent_note"] is not None

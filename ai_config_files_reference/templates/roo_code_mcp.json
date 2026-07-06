@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "local-server": {
+      "command": "node",
+      "args": ["server.js"],
+      "cwd": "/path/to/project/root",
+      "env": {
+        "API_KEY": "${env:API_KEY}"
+      },
+      "alwaysAllow": [],
+      "disabled": false,
+      "timeout": 60
+    }
+  }
+}

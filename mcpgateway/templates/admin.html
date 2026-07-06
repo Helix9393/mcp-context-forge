@@ -21,6 +21,16 @@
     <link rel="stylesheet" href="{{ root_path }}/static/css/tailwind.min.css" />
     <!-- HTMX is now bundled in the main JS bundle -->
     <script nonce="{{ csp_nonce(request) }}">
+      // Default landing tab: if no hash/tab is already requested (e.g. a bookmark
+      // to #tools or a deep link), land on the Work Board tab. Runs before the
+      // bundle's own hash-based tab initializer, so it sees the hash already set.
+      {% if work_board_enabled %}
+      if (!window.location.hash) {
+        window.location.hash = "work-board";
+      }
+      {% endif %}
+    </script>
+    <script nonce="{{ csp_nonce(request) }}">
       // Configure HTMX to swap content on 4xx responses (for inline error display)
       document.addEventListener("htmx:beforeSwap", function (evt) {
         const xhr = evt.detail.xhr;

@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 
 # Third-Party
 from fastapi import HTTPException
+from fastapi.responses import HTMLResponse
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -43,6 +44,9 @@ from mcpgateway.routers.work_board_router import (
     acknowledge_item,
     add_note,
     add_tangent,
+    admin_classify_change,
+    admin_launch_impl,
+    admin_launch_status,
     create_item,
     delete_item,
     demote_now,
@@ -223,7 +227,7 @@ class TestWorkBoardRouter:
     async def test_acknowledge_success(self, db_session, user_ctx):
         """acknowledge succeeds after an agent 'addressed' resolution."""
         created = await create_item(WorkBoardItemCreateIn(lane="next", title="X"), db=db_session, _user=user_ctx)
-        await add_note(created["id"], WorkBoardNoteIn(text="please check"), db=db_session, _user=user_ctx)
+        await add_note(created["id"], WorkBoardNoteIn(text="please check", author="operator"), db=db_session, _user=user_ctx)
         await add_note(created["id"], WorkBoardNoteIn(text="done", author="agent", resolution="addressed"), db=db_session, _user=user_ctx)
         result = await acknowledge_item(created["id"], db=db_session, _user=user_ctx)
         assert result["attention"] == "acknowledged"
@@ -311,3 +315,134 @@ class TestWorkBoardRouter:
 
         result = await refresh_git(db=db_session, _user=user_ctx)
         assert result["refreshed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Admin form endpoints: /admin/board/classify, /launch, /launch-status
+# (design doc §5.3). Mirrors the llm_admin_router test pattern: a MagicMock
+# request with app.state.templates.TemplateResponse stubbed to return a
+# sentinel HTMLResponse, since these endpoints render work_board_partial.html
+# via request.app.state.templates rather than returning JSON.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_request():
+    """A MagicMock request whose app.state.templates.TemplateResponse returns a fixed 200 HTMLResponse."""
+    req = MagicMock()
+    req.app = MagicMock()
+    req.app.state = MagicMock()
+    req.app.state.templates = MagicMock()
+    req.app.state.templates.TemplateResponse.return_value = HTMLResponse("ok", status_code=200)
+    return req
+
+
+@pytest.mark.usefixtures("db_session")
+class TestWorkBoardAdminEndpoints:
+    """POST /admin/board/classify, /launch, /launch-status: refreshed-partial happy paths
+    and inline-banner error surfacing (no raw 500s)."""
+
+    @pytest.fixture(autouse=True)
+    def setup_rbac_mocks(self):
+        """Bypass RBAC decorators for every test in this class."""
+        originals = patch_rbac_decorators()
+        yield
+        restore_rbac_decorators(originals)
+
+    # ------------------------------------------------------------------
+    # POST /admin/board/classify
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_admin_classify_change_success_renders_partial(self, db_session, user_ctx, mock_request, monkeypatch, tmp_path):
+        """A classifiable item renders the refreshed partial (200 HTML), not raw JSON."""
+        # First-Party
+        from mcpgateway.config import settings
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "notes.md").write_text("original\n")
+        monkeypatch.setattr(settings, "work_board_git_repo", str(repo))
+
+        created = await create_item(WorkBoardItemCreateIn(lane="next", title="Doc item"), db=db_session, _user=user_ctx)
+        await add_note(created["id"], WorkBoardNoteIn(text="DOC: notes.md\n```append\nmore\n```", author="operator"), db=db_session, _user=user_ctx)
+
+        response = await admin_classify_change(mock_request, item_id=created["id"], db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        mock_request.app.state.templates.TemplateResponse.assert_called_once()
+        # Error banner must not be set on the success path.
+        _, kwargs_or_context = _template_call_context(mock_request)
+        assert kwargs_or_context.get("error") is None
+
+    @pytest.mark.asyncio
+    async def test_admin_classify_change_missing_item_surfaces_inline_banner(self, db_session, user_ctx, mock_request):
+        """A 404 (missing item) is caught and surfaced as an inline error banner, not a raw HTTPException/500."""
+        response = await admin_classify_change(mock_request, item_id="w-999", db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        _, context = _template_call_context(mock_request)
+        assert context.get("error") is not None
+
+    # ------------------------------------------------------------------
+    # POST /admin/board/launch
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_admin_launch_impl_guard_failure_renders_partial_not_500(self, db_session, user_ctx, mock_request):
+        """launch_impl's own safety guards (e.g. not an 'impl' item) set run_state='failed'
+        internally and return normally -- the admin endpoint just re-renders, no exception."""
+        created = await create_item(WorkBoardItemCreateIn(lane="next", title="Not impl, no notes"), db=db_session, _user=user_ctx)
+
+        response = await admin_launch_impl(mock_request, item_id=created["id"], db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        mock_request.app.state.templates.TemplateResponse.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_launch_impl_already_running_surfaces_conflict_as_banner(self, db_session, user_ctx, mock_request):
+        """The one guard that raises (already-running idempotency conflict) is caught by
+        _board_partial_after and surfaced as an inline banner, not a 500/raw 409."""
+        # First-Party
+        import mcpgateway.services.work_board_service as service
+
+        created = await create_item(WorkBoardItemCreateIn(lane="next", title="Impl item"), db=db_session, _user=user_ctx)
+        await add_note(created["id"], WorkBoardNoteIn(text="please implement", author="operator"), db=db_session, _user=user_ctx)
+        service.set_change_state(db_session, created["id"], change_kind="impl", run_state="running", author="agent")
+
+        response = await admin_launch_impl(mock_request, item_id=created["id"], db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        _, context = _template_call_context(mock_request)
+        assert context.get("error") is not None
+        assert "already" in context["error"].lower() or "running" in context["error"].lower()
+
+    # ------------------------------------------------------------------
+    # POST /admin/board/launch-status
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_admin_launch_status_not_running_renders_partial(self, db_session, user_ctx, mock_request):
+        """An item that isn't 'running' is a no-op reconcile; endpoint still renders 200 HTML."""
+        created = await create_item(WorkBoardItemCreateIn(lane="next", title="Idle item"), db=db_session, _user=user_ctx)
+
+        response = await admin_launch_status(mock_request, item_id=created["id"], db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        mock_request.app.state.templates.TemplateResponse.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_launch_status_missing_item_surfaces_inline_banner(self, db_session, user_ctx, mock_request):
+        """A 404 (missing item) is caught and surfaced as an inline error banner, not a raw 500."""
+        response = await admin_launch_status(mock_request, item_id="w-999", db=db_session, _user=user_ctx)
+        assert response.status_code == 200
+        _, context = _template_call_context(mock_request)
+        assert context.get("error") is not None
+
+
+def _template_call_context(mock_request):
+    """Extract (template_name, context_dict) from the single TemplateResponse(...) call.
+
+    ``_render_board_partial`` calls ``templates.TemplateResponse(request, "work_board_partial.html", {...})``
+    -- the context dict is the third positional arg.
+    """
+    call = mock_request.app.state.templates.TemplateResponse.call_args
+    args = call.args
+    context = args[2] if len(args) > 2 else call.kwargs.get("context", {})
+    template_name = args[1] if len(args) > 1 else call.kwargs.get("name")
+    return template_name, context

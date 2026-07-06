@@ -15,6 +15,7 @@ functions for protecting routes.
 from datetime import datetime, timezone
 import functools
 from functools import wraps
+import ipaddress
 import logging
 from typing import Any, Callable, Generator, List, Optional
 import uuid
@@ -49,6 +50,37 @@ _ACCESS_DENIED_MSG = "Access denied"
 # Bearer security scheme — uses the configured auth header (AUTH_HEADER_NAME)
 # so RBAC token extraction stays aligned with the rest of the auth flow.
 security = ConfigurableHTTPBearer(auto_error=False)
+
+
+def _is_loopback_bind(host: str) -> bool:
+    """Return True only when the gateway is bound to a loopback interface.
+
+    Defense-in-depth for the unauthenticated-admin override below, whose safety
+    the deployment docs describe as "safe only because HOST=127.0.0.1". That
+    invariant previously lived only in a comment: nothing stopped the override
+    from firing if HOST were flipped to a routable interface, which would serve
+    platform-admin to the network. This encodes the invariant in code.
+
+    ``0.0.0.0`` / ``::`` bind ALL interfaces and therefore must NOT qualify as
+    loopback. Note this gates on the *bind* address, not the request peer, so it
+    is a coarse control — behind a reverse proxy a loopback bind can still be
+    exposed publicly; that is an inherent proxy-trust concern, not this guard's
+    job, and this is strictly more restrictive than the prior no-check behavior.
+
+    Args:
+        host: The configured bind host (``settings.host``).
+
+    Returns:
+        bool: True if ``host`` names a loopback interface, else False.
+    """
+    normalized = (host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except (ValueError, TypeError):
+        # Unparseable / non-string host → treat as NOT loopback (fail safe: deny the grant).
+        return False
 
 
 def get_db(request: Request = None) -> Generator[Session, None, None]:
@@ -388,7 +420,17 @@ async def get_current_user_with_permissions(request: Request, credentials: Optio
         # load and HTMX/XHR call to /admin/login before the override is ever consulted
         # (loopback single-user boxes only; dangerous override, gated by two
         # secure-by-default flags — see config.py:401-405).
-        if not settings.auth_required and getattr(settings, "allow_unauthenticated_admin", False) is True:
+        #
+        # Third gate (_is_loopback_bind): the override is honored ONLY when the
+        # gateway is bound to a loopback interface. If HOST is ever a routable
+        # address, the override is silently skipped and normal auth applies
+        # (browser falls through to the /admin/login redirect below) rather than
+        # exposing unauthenticated platform-admin to the network.
+        if (
+            not settings.auth_required
+            and getattr(settings, "allow_unauthenticated_admin", False) is True
+            and _is_loopback_bind(settings.host)
+        ):
             _set_trace_context_for_identity(email=settings.platform_admin_email, is_admin=True, auth_method="disabled")
             return {
                 "email": settings.platform_admin_email,

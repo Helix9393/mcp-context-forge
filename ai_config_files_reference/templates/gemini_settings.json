@@ -1,0 +1,21 @@
+{
+  "theme": "Default",
+  "sandbox": false,
+  "contextFileName": ["GEMINI.md", "AGENTS.md"],
+  "mcpServers": {
+    "myNodeServer": {
+      "command": "node",
+      "args": ["mcp_server.js"],
+      "cwd": "./mcp_tools/node",
+      "excludeTools": ["dangerous_tool", "file_deleter"]
+    },
+    "myDockerServer": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "API_KEY", "ghcr.io/foo/bar"],
+      "env": {
+        "API_KEY": "$MY_API_TOKEN"
+      }
+    }
+  },
+  "usageStatisticsEnabled": false
+}

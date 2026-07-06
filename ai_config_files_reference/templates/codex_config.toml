@@ -1,0 +1,16 @@
+# User: ~/.codex/config.toml
+# Project: .codex/config.toml
+
+model = "gpt-5.5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/absolute/path"]
+enabled = true
+
+[mcp_servers.example_http]
+url = "https://example.com/mcp"
+enabled = true
+# bearer_token_env_var = "EXAMPLE_MCP_TOKEN"
