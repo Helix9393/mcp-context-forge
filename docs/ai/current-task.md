@@ -1,6 +1,14 @@
 # Current Task
 
-## CURRENT STATE (2026-07-06, session 5) — pivot to whole-gateway config; 3 verified plans committed
+## CURRENT STATE (2026-07-06, session 6) — CourtListener federated + desktop-mcp-sync built/fixed; active-probe in flight
+
+**Done:** Federated CourtListener onto the gateway via OAuth+DCR (one browser login → 16 tools), composed a virtual server (`2bdbd4fbb65f4bdf9c072ea2db37d9eb`, renamed "gateway-hub", now 29 tools with descrybe's 13), and pointed 4 clients' `courtlistener-gw` entries at it. Built `desktop-mcp-sync` (launchd auto-propagation tool at `tools/desktop-mcp-sync/`, UNTRACKED). Ran doubt-driven review that found the tool would silently fail; validated every finding vs source; wrote + user-approved a fix plan (`~/.claude/plans/skip-create-a-plan-stateless-rossum.md`); implemented F1-F13 (Sonnet). Security decision: excluded supabase (deleted its gateway) + github from the unauth hub.
+
+**In flight:** Opus agent `a585486247cf457d3` rebuilding the F4 re-auth health signal as an active probe (the plan's `POST /gateways/{id}/tools/refresh` mechanism was empirically disproven — dead no-op for authorization_code gateways). Result NOT yet in context.
+
+**Deferred / next (user):** restart Claude Code to see gateway-hub; open 2 pending OAuth logins (midpage `.../oauth/authorize/69e38eb77d924ca682b598c4050d1a29`, midpage-legal-research `.../7762399fb4364b199ea42e9d4bf997c5`) → reconcile auto-attaches their tools; commit `tools/desktop-mcp-sync/` after active-probe verified; github needs a manual OAuth app (no DCR) if ever wanted.
+
+## PRIOR STATE (2026-07-06, session 5) — pivot to whole-gateway config; 3 verified plans committed
 
 Scope widened from Work Board to the whole gateway (user: "you've neglected the other pages… mcp wrapper, local models, plugins"). **Done:** Work Board overhaul fast-forward-merged into `main` (`bba67c9c`, NOT pushed). Then produced 3 machine-specific config plans via parallel analysis subagents + adversarial doubt-review (Opus, live-tested), committed `b603f3aa` in `docs/ai/plans/` — `config-local-models.md`, `config-mcp-wrapper.md`, `config-plugins.md`, `README.md` (order: local-models → mcp-wrapper → plugins). Doubt findings folded in (marked CORRECTED/RESOLVED): killed a false login/CSRF prereq, fixed false-fail verify steps, re-staged PII/Secrets guardrails observe-only-first. Cross-model offered → user skipped.
 
